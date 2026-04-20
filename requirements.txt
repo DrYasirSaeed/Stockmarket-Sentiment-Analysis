@@ -1,0 +1,29 @@
+# Information Transmission and Sectoral Asymmetry in the KSE-100
+# Author: Dr. Yasir Saeed, KUST
+# Install: pip install -r requirements.txt
+
+# ── Phase 1: Data Acquisition ─────────────────
+playwright>=1.43.0
+playwright-stealth>=1.0.6
+cloudscraper>=1.2.71
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+nest_asyncio>=1.6.0
+
+# ── Phase 2: FinBERT Pipeline ─────────────────
+transformers>=4.40.0
+torch>=2.0.0
+
+# ── Phase 3: DCC-GARCH ────────────────────────
+arch>=6.3.0          # Kevin Sheppard's ARCH library
+
+# ── Phase 4: Panel VAR ────────────────────────
+statsmodels>=0.14.0
+scikit-learn>=1.4.0  # Used in classifier validation
+
+# ── Shared: Data and Visualization ───────────
+pandas>=2.0.0
+numpy>=1.26.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+openpyxl>=3.1.0
