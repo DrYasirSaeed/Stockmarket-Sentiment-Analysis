@@ -4,24 +4,24 @@
 **Author:** Dr. Yasir Saeed  
 **Affiliation:** Department of Economics, Kohat University of Science & Technology (KUST), KPK, Pakistan  
 **Contact:** yasir.saeed@kust.edu.pk  
-**Status:** Empirical results forthcoming | April 2026  
+**Status:** Prototypes under development | April 2026  
 
 ---
 
 ## 🔍 Research Overview
 
-This repository contains the full computational pipeline for my research proposal on **how macroeconomic sentiment — extracted from Pakistan's financial news media — transmits into equity returns and volatility across five major sectors of the KSE-100 Index**.
+This repository contains the full computational pipeline for my research on **how macroeconomic sentiment extracted from Pakistan's financial news media transmits into equity returns and volatility across five major sectors of the KSE-100 Index**.
 
-The central argument is that treating sentiment as a single composite signal is a measurement error. Macroeconomic news in Pakistan arrives through distinct policy channels — SBP monetary signals, FBR fiscal announcements, IMF/World Bank external finance developments, and NEPRA/OGRA energy regulatory decisions. Each channel activates different sectors at different intensities and speeds. Aggregating these signals before analysis destroys the very variation that contains the most economically meaningful information.
+The central argument is that treating sentiment as a single composite signal is a measurement error. Macroeconomic news in Pakistan arrives through distinct policy channels.  SBP monetary signals, FBR fiscal announcements, IMF/World Bank external finance developments, and NEPRA/OGRA energy regulatory decisions. Each channel activates different sectors at different intensities and speeds. Aggregating these signals before analysis destroys the very variation that contains the most economically meaningful information.
 
 ---
 
-## 🏗️ Research Design Architecture
+## Research Design Architecture
 
 ```
 Phase 1 — Data Acquisition
 ├── Scrape: Business Recorder, Dawn Business, The News, ARY Business
-├── Coverage: January 2014 – December 2025 (~2,900 trading days)
+├── Coverage: January 2014 – December 2025 (~2,900 trading days)  
 └── Output: Raw article corpus (headline + body + timestamp)
         ↓
 Phase 2 — FinBERT Sentiment Pipeline
@@ -42,7 +42,7 @@ Phase 4 — Panel VAR + Granger Causality
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 kse100-sentiment-transmission/
@@ -101,7 +101,7 @@ kse100-sentiment-transmission/
 
 ---
 
-## ⚙️ Econometric Framework
+## Econometric Framework
 
 **DCC-GARCH** (Engle, 2002) captures time-varying co-movement between sentiment shocks and sectoral return volatility across three macroeconomic regimes: pre-tightening (2014–2021), SBP tightening cycle (2022–2023), and easing phase (2024–2025).
 
@@ -131,10 +131,10 @@ This is a known and well-documented challenge in computational social science. T
 
 ---
 
-## 📬 Contact
+## Contact
 
 **Dr. Yasir Saeed**  
 Lecturer (BPS-18), Department of Economics  
 Kohat University of Science & Technology (KUST)  
 Khyber Pakhtunkhwa, Pakistan  
-yasir.saeed@kust.edu.pk
+yasirsaeed@kust.edu.pk
