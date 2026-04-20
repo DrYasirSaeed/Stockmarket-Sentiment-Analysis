@@ -126,9 +126,8 @@ kse100-sentiment-transmission/
 
 ## 🚧 Data Acquisition Challenge — Honest Note
 
-The news scraper (`01_data_acquisition/brecorder_scraper.py`) is fully written and architecturally sound. It implements two Cloudflare bypass strategies — Playwright stealth browser and cloudscraper — with randomized human-like delays. However, brecorder.com's Cloudflare configuration defeats both strategies in Google Colab's environment due to (1) datacenter IP detection and (2) missing system libraries for headless Chromium.
+The news scraper (`01_data_acquisition/brecorder_scraper.py`) is fully written and well programmed, however it faces a roadblock, Cloudfare does not allow program to scrap on most news sites. to tackle the problem playwrite stealth borwser and cloudscapper codings were embedded which met the same fate. Possible reasons, Google Colab enviroment does not suppport the program due to datacenter IP detection and missing libraries for headlines. Looking for alternate solutions to the matter.
 
-This is a known and well-documented challenge in computational social science. The scraper works correctly as written; the limitation is infrastructural, not logical. Alternative data acquisition paths currently under evaluation: RSS feed parsing, ScraperAPI residential proxy integration, and direct archival access for pre-2020 data. See `01_data_acquisition/README.md` for full technical detail.
 
 ---
 
