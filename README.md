@@ -3,7 +3,7 @@
 
 **Author:** Dr. Yasir Saeed  
 **Affiliation:** Department of Economics, Kohat University of Science & Technology (KUST), KPK, Pakistan  
-**Contact:** yasir.saeed@kust.edu.pk  
+**Contact:** yasirsaeed@kust.edu.pk  
 **Status:** Prototypes under development | April 2026  
 
 ---
