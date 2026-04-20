@@ -91,6 +91,7 @@ kse100-sentiment-transmission/
 | Fertilizers | 3rd | Energy (gas policy) + Fiscal |
 | Cement | 4th | Fiscal (PSDP spending) |
 | Technology | Growing | External Finance (remittances/FDI) |
+* Note for readers, these 5 catagories cover roughly about 70 percent of KSE-100 Index
 
 | Sentiment Category | Primary Sources |
 |---|---|
