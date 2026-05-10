@@ -83,7 +83,7 @@ MAX_RETRIES   = 3
 RETRY_BACKOFF = 10   # seconds × attempt number
 
 # --- Output ----------------------------------------------------------
-OUTPUT_DIR    = Path(__file__).parent / "brecorder_data"
+OUTPUT_DIR    = Path(r"G:\My Drive\Github-Cursor\Stockmarket-Sentiment-Analysis\Extracted Data")
 PROGRESS_FILE = OUTPUT_DIR / "progress.json"
 
 BASE    = "https://www.brecorder.com"
