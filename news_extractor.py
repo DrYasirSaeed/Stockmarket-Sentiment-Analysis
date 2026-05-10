@@ -5,26 +5,33 @@ Author : Dr. Yasir Saeed
 Affiliation: Kohat University of Science & Technology (KUST)
 
 Description:
-  ID-scan extraction pipeline for BRecorder financial news.
+  Scrapes all BRecorder articles from ID 40000000 to the current date.
+  Saves one CSV file per calendar month and tracks progress in a JSON
+  file so any interruption can be resumed exactly where it stopped —
+  no article is ever fetched twice.
 
-  URL pattern confirmed: https://www.brecorder.com/news/<article_id>
-  Article IDs are sequential integers. The extractor scans a range of IDs,
-  fetches each page, extracts headline + body, and keeps only articles whose
-  publication date falls within the target window.
+Architecture:
+  - progress.json  : tracks last scanned ID + per-month article counts
+  - brecorder_YYYY_MM.csv : one file per month, appended incrementally
+  - 404 responses use a short delay (0.3–0.8 s) to keep scanning fast
+  - 200 responses use a polite delay (2–5 s) to avoid rate limiting
+  - Each session processes SESSION_SIZE IDs then stops cleanly
 
-  Output: brecorder_articles.csv — ready for topic_router.py classifier.
-
-Setup — run once in PowerShell:
+Setup (run once):
     pip install curl_cffi beautifulsoup4 lxml requests pandas
+
+Usage:
+    python news_extractor.py              # resumes automatically
+    python news_extractor.py --debug      # test single article only
+    python news_extractor.py --status     # show progress without scraping
 """
 
-# =====================================================================
-# Step 0: Imports
-# =====================================================================
 import re
 import time
+import json
 import random
 import logging
+import argparse
 import sys
 from datetime import datetime, date
 from pathlib import Path
@@ -35,11 +42,8 @@ from bs4 import BeautifulSoup
 
 try:
     from curl_cffi import requests as cffi_requests
-    _CFFI_OK = True
 except ImportError:
-    _CFFI_OK = False
-    print("ERROR: curl_cffi not installed.")
-    print("Fix : pip install curl_cffi")
+    print("ERROR: curl_cffi not installed.  Run:  pip install curl_cffi")
     sys.exit(1)
 
 logging.basicConfig(
@@ -51,32 +55,36 @@ log = logging.getLogger(__name__)
 
 
 # =====================================================================
-# Step 1: Configuration — edit these before each run
+# Configuration
 # =====================================================================
 
-# --- Date filter (inclusive) -----------------------------------------
-# Only articles published within this window are kept in the output CSV.
-DATE_START = date(2026, 5, 2)
-DATE_END   = date(2026, 5, 8)   # today
+# --- ID range --------------------------------------------------------
+# 40000000 is the confirmed earliest accessible article.
+# ID_SCAN_END is set high — the run stops naturally at today's articles.
+ID_SCAN_START = 40_000_000
+ID_SCAN_END   = 40_600_000   # well beyond current (~40420600 as of May 2026)
 
-# --- ID scan range ---------------------------------------------------
-# BRecorder article IDs are sequential 8-digit integers.
-# Article 40420446 is confirmed live. Scan a window around it.
-# Increase the range to cover more days; ~50–80 IDs per day is typical.
-ID_SCAN_START = 40420200   # scan from here
-ID_SCAN_END   = 40420600   # scan to here  (~400 IDs covers ~5–7 days)
+# --- Session size ----------------------------------------------------
+# Number of IDs to attempt per run. Adjust to fit available time.
+# At ~1–2 s average per ID (mix of 404s and hits), 5000 IDs ≈ 2–3 hours.
+# Run daily or overnight until complete.
+SESSION_SIZE = 5_000
 
-# --- Rate limiting ---------------------------------------------------
-DELAY_MIN = 2.0   # seconds between requests (randomised)
-DELAY_MAX = 5.0
+# --- Delays (seconds) ------------------------------------------------
+DELAY_HIT_MIN  = 2.0   # after a successful article fetch (200)
+DELAY_HIT_MAX  = 5.0
+DELAY_MISS_MIN = 0.3   # after a 404 — keep the scan moving quickly
+DELAY_MISS_MAX = 0.8
+DELAY_ERR_MIN  = 8.0   # after a 403 / network error — back off
+DELAY_ERR_MAX  = 15.0
 
 # --- Retry policy ----------------------------------------------------
 MAX_RETRIES   = 3
 RETRY_BACKOFF = 10   # seconds × attempt number
 
 # --- Output ----------------------------------------------------------
-OUTPUT_PATH      = Path(__file__).parent / "brecorder_articles.csv"
-CHECKPOINT_EVERY = 25   # save progress every N successfully parsed articles
+OUTPUT_DIR    = Path(__file__).parent / "brecorder_data"
+PROGRESS_FILE = OUTPUT_DIR / "progress.json"
 
 BASE    = "https://www.brecorder.com"
 ART_URL = BASE + "/news/{article_id}"
@@ -94,16 +102,94 @@ HEADERS = {
 
 
 # =====================================================================
-# Step 2: Session Factory
+# Progress Tracking
+# =====================================================================
+
+def load_progress() -> dict:
+    """
+    Load progress from disk. Returns default state if no progress file
+    exists yet (i.e. first ever run).
+    """
+    if PROGRESS_FILE.exists():
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            p = json.load(f)
+        log.info(f"Resuming from ID {p['last_scanned_id'] + 1}  "
+                 f"({p['total_articles']} articles collected so far)")
+        return p
+    log.info(f"No progress file found — starting fresh from ID {ID_SCAN_START}")
+    return {
+        "last_scanned_id":  ID_SCAN_START - 1,
+        "total_articles":   0,
+        "month_counts":     {},   # {"2023-01": 45, "2023-02": 67, ...}
+        "started_at":       datetime.utcnow().isoformat(),
+        "last_updated":     datetime.utcnow().isoformat(),
+    }
+
+
+def save_progress(p: dict) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    p["last_updated"] = datetime.utcnow().isoformat()
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+        json.dump(p, f, indent=2)
+
+
+def print_status(p: dict) -> None:
+    """Print a human-readable summary of current progress."""
+    done    = p["last_scanned_id"] - ID_SCAN_START + 1
+    total   = ID_SCAN_END - ID_SCAN_START + 1
+    pct     = done / total * 100 if total > 0 else 0
+    remain  = ID_SCAN_END - p["last_scanned_id"]
+
+    print(f"\n{'='*55}")
+    print(f"  Progress Report")
+    print(f"  Started          : {p.get('started_at','—')[:19]}")
+    print(f"  Last updated     : {p.get('last_updated','—')[:19]}")
+    print(f"  IDs scanned      : {done:,} / {total:,}  ({pct:.1f}%)")
+    print(f"  IDs remaining    : {remain:,}")
+    print(f"  Articles saved   : {p['total_articles']:,}")
+    print(f"\n  Monthly breakdown:")
+    for month, count in sorted(p["month_counts"].items()):
+        print(f"    {month}  →  {count:>5} articles")
+    print(f"{'='*55}\n")
+
+
+# =====================================================================
+# Monthly CSV Management
+# =====================================================================
+
+def monthly_csv_path(date_str: str) -> Path:
+    """
+    Return the Path for the monthly CSV that should hold this article.
+    Format: brecorder_YYYY_MM.csv
+    Falls back to brecorder_unknown.csv if date cannot be parsed.
+    """
+    try:
+        d = date.fromisoformat(date_str[:10])
+        return OUTPUT_DIR / f"brecorder_{d.year}_{d.month:02d}.csv"
+    except (ValueError, TypeError):
+        return OUTPUT_DIR / "brecorder_unknown.csv"
+
+
+def append_to_monthly_csv(record: dict) -> None:
+    """
+    Append one article record to the correct monthly CSV.
+    Creates the file with a header row if it does not exist yet;
+    appends without header if the file already exists.
+    """
+    path = monthly_csv_path(record.get("date", ""))
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    file_exists = path.exists()
+    pd.DataFrame([record]).to_csv(
+        path, mode="a", header=not file_exists,
+        index=False, encoding="utf-8-sig"
+    )
+
+
+# =====================================================================
+# Session Factory
 # =====================================================================
 
 def make_session() -> cffi_requests.Session:
-    """
-    curl_cffi session impersonating Chrome 120.
-    Replicates Chrome's exact TLS handshake so Cloudflare Bot Management
-    cannot fingerprint it as automated traffic.
-    Works from a home/university IP; datacenter IPs (Colab) stay blocked.
-    """
     s = cffi_requests.Session(impersonate="chrome120")
     s.headers.update(HEADERS)
     log.info("Session ready: curl_cffi / chrome120 TLS impersonation")
@@ -111,11 +197,10 @@ def make_session() -> cffi_requests.Session:
 
 
 # =====================================================================
-# Step 3: HTML Parsers
+# HTML Parsers
 # =====================================================================
 
 def _first_text(soup: BeautifulSoup, selectors: list) -> str:
-    """Try CSS selectors in order; return first non-empty text found."""
     for sel in selectors:
         el = soup.select_one(sel)
         if el and el.get_text(strip=True):
@@ -152,7 +237,6 @@ def _extract_body(soup: BeautifulSoup) -> str:
 
 
 def _extract_date(soup: BeautifulSoup) -> str:
-    # <meta property="article:published_time"> is the most reliable
     meta = soup.find("meta", property="article:published_time")
     if meta and meta.get("content"):
         return meta["content"][:10]
@@ -182,19 +266,21 @@ def parse_page(html: str) -> dict:
 
 
 # =====================================================================
-# Step 4: Single-Article Fetch
+# Single Article Fetch
 # =====================================================================
 
 def fetch_article(session, article_id: int) -> dict:
-    """
-    Fetch one article page. Returns a result dict with all extracted
-    fields plus http_status. Returns http_status=0 on network error.
-    """
     url    = ART_URL.format(article_id=article_id)
-    result = {"article_id": article_id, "url": url,
-              "headline": "", "body_text": "", "date": "",
-              "author": "", "http_status": 0,
-              "scraped_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}
+    result = {
+        "article_id":  article_id,
+        "url":         url,
+        "headline":    "",
+        "body_text":   "",
+        "date":        "",
+        "author":      "",
+        "http_status": 0,
+        "scraped_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -202,11 +288,10 @@ def fetch_article(session, article_id: int) -> dict:
             result["http_status"] = r.status_code
 
             if r.status_code == 404:
-                return result   # ID doesn't exist — skip silently
+                return result
 
             if r.status_code == 403:
-                log.warning(f"  [{article_id}] 403 (attempt {attempt}/{MAX_RETRIES})"
-                            " — Cloudflare blocking this IP")
+                log.warning(f"  [{article_id}] 403 (attempt {attempt}/{MAX_RETRIES})")
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_BACKOFF * attempt)
                     continue
@@ -216,8 +301,7 @@ def fetch_article(session, article_id: int) -> dict:
                 log.warning(f"  [{article_id}] HTTP {r.status_code}")
                 return result
 
-            parsed = parse_page(r.text)
-            result.update(parsed)
+            result.update(parse_page(r.text))
             return result
 
         except Exception as exc:
@@ -229,121 +313,118 @@ def fetch_article(session, article_id: int) -> dict:
 
 
 # =====================================================================
-# Step 5: Full ID-Scan Pipeline
+# Main Session Runner
 # =====================================================================
 
-def _save_csv(records: list, path: Path) -> pd.DataFrame:
-    df = pd.DataFrame(records)
-    df.to_csv(path, index=False, encoding="utf-8-sig")
-    return df
-
-
-def _in_date_range(date_str: str, start: date, end: date) -> bool:
-    """Return True if date_str (YYYY-MM-DD) falls within [start, end]."""
-    if not date_str:
-        return True   # keep articles with unparsed dates for manual review
-    try:
-        return start <= date.fromisoformat(date_str) <= end
-    except ValueError:
-        return True
-
-
-def run(
-    id_start:  int  = ID_SCAN_START,
-    id_end:    int  = ID_SCAN_END,
-    date_start: date = DATE_START,
-    date_end:   date = DATE_END,
-    output:    Path = OUTPUT_PATH,
-) -> pd.DataFrame:
+def run_session(session_size: int = SESSION_SIZE) -> None:
     """
-    Scan article IDs from id_start to id_end inclusive.
-    Keep only articles whose publication date is within [date_start, date_end].
-    Saves results to output CSV with periodic checkpoints.
+    Scan up to session_size IDs starting from where the last session
+    stopped. Saves each article immediately to its monthly CSV and
+    updates progress.json every 100 IDs.
+
+    Run this script repeatedly (daily, overnight) until complete.
+    Each run picks up exactly where the last one ended.
     """
-    total    = id_end - id_start + 1
-    session  = make_session()
-    kept     = []    # articles within date range
-    seen     = 0     # total IDs attempted
-    skipped  = 0     # 404 / out-of-date-range
-    blocked  = 0     # 403
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    progress = load_progress()
 
-    log.info(f"ID scan: {id_start} → {id_end}  ({total} IDs)")
-    log.info(f"Date filter: {date_start} → {date_end}")
-    log.info(f"Output: {output.resolve()}\n")
+    resume_from = progress["last_scanned_id"] + 1
+    scan_to     = min(resume_from + session_size - 1, ID_SCAN_END)
 
-    for article_id in range(id_start, id_end + 1):
-        seen += 1
+    if resume_from > ID_SCAN_END:
+        log.info("All IDs scanned — extraction complete.")
+        print_status(progress)
+        return
+
+    session = make_session()
+
+    ids_attempted  = 0
+    hits           = 0   # 200 responses
+    misses         = 0   # 404 responses
+    blocked        = 0   # 403 responses
+    session_articles = 0
+
+    log.info(f"Session: scanning IDs {resume_from} → {scan_to}  "
+             f"({scan_to - resume_from + 1} IDs)")
+
+    for article_id in range(resume_from, scan_to + 1):
+        ids_attempted += 1
         result = fetch_article(session, article_id)
-
         status = result["http_status"]
 
-        if status == 404:
-            log.debug(f"  {article_id}  404 — skip")
-            skipped += 1
+        if status == 200:
+            hits += 1
+            month_key = result["date"][:7] if result["date"] else "unknown"
+            progress["month_counts"][month_key] = (
+                progress["month_counts"].get(month_key, 0) + 1
+            )
+            progress["total_articles"] += 1
+            session_articles += 1
+
+            append_to_monthly_csv(result)
+
+            log.info(f"  {article_id}  SAVED  {result['date']}  "
+                     f"\"{result['headline'][:65]}\"")
+
+            time.sleep(random.uniform(DELAY_HIT_MIN, DELAY_HIT_MAX))
+
+        elif status == 404:
+            misses += 1
+            log.debug(f"  {article_id}  404")
+            time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
         elif status == 403:
             blocked += 1
-            log.warning(f"  {article_id}  BLOCKED (403)  "
-                        f"[kept={len(kept)} skipped={skipped} blocked={blocked}]")
+            log.warning(f"  {article_id}  BLOCKED (403) — "
+                        f"backing off {DELAY_ERR_MAX:.0f}s")
+            time.sleep(random.uniform(DELAY_ERR_MIN, DELAY_ERR_MAX))
 
-        elif status == 200:
-            if not _in_date_range(result["date"], date_start, date_end):
-                skipped += 1
-                log.info(f"  {article_id}  out of range ({result['date']}) — skip")
-            else:
-                kept.append(result)
-                log.info(f"  {article_id}  OK  {result['date']}  "
-                         f"\"{result['headline'][:60]}\"")
-
-                if len(kept) % CHECKPOINT_EVERY == 0:
-                    _save_csv(kept, output)
-                    log.info(f"  >>> Checkpoint: {len(kept)} articles saved")
         else:
-            skipped += 1
-            log.warning(f"  {article_id}  HTTP {status} — skip")
+            log.warning(f"  {article_id}  HTTP {status}")
+            time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
-        if article_id < id_end:
-            time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+        # Save progress every 100 IDs
+        progress["last_scanned_id"] = article_id
+        if ids_attempted % 100 == 0:
+            save_progress(progress)
+            log.info(f"  --- Progress saved  "
+                     f"[session: {session_articles} articles | "
+                     f"total: {progress['total_articles']}] ---")
 
-    df = _save_csv(kept, output) if kept else pd.DataFrame()
+    # Final save
+    save_progress(progress)
 
+    remaining = ID_SCAN_END - scan_to
     print(f"\n{'='*55}")
-    print(f"  Scan complete")
-    print(f"  IDs scanned      : {seen}")
-    print(f"  Articles kept    : {len(kept)}")
-    print(f"  Skipped/no match : {skipped}")
-    print(f"  Blocked (403)    : {blocked}")
-    print(f"  Output           : {output.resolve()}")
+    print(f"  Session complete")
+    print(f"  IDs scanned this session : {ids_attempted:,}")
+    print(f"  Articles saved           : {session_articles:,}")
+    print(f"  404 (no article)         : {misses:,}")
+    print(f"  Blocked (403)            : {blocked:,}")
+    print(f"  Total articles so far    : {progress['total_articles']:,}")
+    print(f"  IDs remaining            : {remaining:,}")
+    pct = (progress["last_scanned_id"] - ID_SCAN_START + 1) / \
+          (ID_SCAN_END - ID_SCAN_START + 1) * 100
+    print(f"  Overall progress         : {pct:.1f}%")
+    print(f"  Output folder            : {OUTPUT_DIR.resolve()}")
+    print(f"\n  Run the script again to continue.")
     print(f"{'='*55}\n")
-    return df
 
 
 # =====================================================================
-# Step 6: Selector Debugger — run first to verify HTML structure
+# Selector Debugger
 # =====================================================================
 
 def debug_selectors(article_id: int = 40420446) -> None:
-    """
-    Fetch one article and probe every CSS selector.
-    Run this BEFORE a full scan to confirm the site is reachable and
-    that headlines/body/date are being extracted correctly.
-    """
     session = make_session()
     url     = ART_URL.format(article_id=article_id)
     log.info(f"Probing: {url}")
-
     r = session.get(url, timeout=25, allow_redirects=True)
     print(f"\nHTTP {r.status_code}   Final URL: {r.url}\n")
-
     if r.status_code != 200:
-        print(f"Cannot parse — HTTP {r.status_code}.")
-        if r.status_code == 403:
-            print("Still blocked. Ensure you are running this from a home/university")
-            print("network — NOT from Colab or any cloud server.")
+        print(f"Cannot parse — HTTP {r.status_code}")
         return
-
     soup = BeautifulSoup(r.text, "lxml")
-
     probes = {
         "Headline  h1.title":               soup.select_one("h1.title"),
         "Headline  h1.article-title":       soup.select_one("h1.article-title"),
@@ -356,11 +437,9 @@ def debug_selectors(article_id: int = 40420446) -> None:
         "Body      article":                soup.find("article"),
         "Date      meta published_time":    soup.find("meta", property="article:published_time"),
         "Date      time[datetime]":         soup.find("time"),
-        "Date      .publish-date":          soup.select_one(".publish-date"),
         "Author    .author-name":           soup.select_one(".author-name"),
         "Author    .byline":                soup.select_one(".byline"),
     }
-
     print("─── Selector Probe ─────────────────────────────────────────────")
     for label, el in probes.items():
         if el is None:
@@ -369,44 +448,49 @@ def debug_selectors(article_id: int = 40420446) -> None:
             snippet = (el.get_text(strip=True) if hasattr(el, "get_text")
                        else el.get("content", ""))[:80]
             print(f"  FOUND  {label:<46} → {snippet!r}")
-
-    # Also show live extracted values
     parsed = parse_page(r.text)
     print(f"\n─── Extracted Values ───────────────────────────────────────────")
     print(f"  Headline : {parsed['headline'][:80]}")
     print(f"  Date     : {parsed['date']}")
     print(f"  Author   : {parsed['author']}")
-    print(f"  Body     : {parsed['body_text'][:200]}{'...' if len(parsed['body_text']) > 200 else ''}")
-
-    print("\n─── Tags matching body|article|story|content ───────────────────")
-    for tag in soup.find_all(class_=re.compile(r"body|article|story|content", re.I)):
-        classes = " ".join(tag.get("class", []))
-        snippet = tag.get_text(strip=True)[:60]
-        print(f"  <{tag.name} class=\"{classes}\">  {snippet!r}")
+    print(f"  Body     : {parsed['body_text'][:200]}"
+          f"{'...' if len(parsed['body_text']) > 200 else ''}")
 
 
 # =====================================================================
-# Step 7: Entry Point
+# Entry Point
 # =====================================================================
 
 if __name__ == "__main__":
-    print("=" * 55)
-    print("  BRecorder News Extractor")
-    print(f"  ID range   : {ID_SCAN_START} → {ID_SCAN_END}")
-    print(f"  Date filter: {DATE_START}  →  {DATE_END}")
-    print(f"  Output     : {OUTPUT_PATH.resolve()}")
-    print("=" * 55)
+    parser = argparse.ArgumentParser(
+        description="BRecorder news extractor — resumes automatically from last position"
+    )
+    parser.add_argument(
+        "--debug",  action="store_true",
+        help="Run selector debug on article 40420446 only (no scraping)"
+    )
+    parser.add_argument(
+        "--status", action="store_true",
+        help="Print progress summary without scraping"
+    )
+    parser.add_argument(
+        "--session-size", type=int, default=SESSION_SIZE,
+        help=f"IDs to scan this run (default: {SESSION_SIZE})"
+    )
+    args = parser.parse_args()
 
-    # Step 1 — verify site is reachable and selectors are correct
-    print("\n[Step 1 of 2]  Selector debug on article 40420446 ...\n")
-    debug_selectors(40420446)
+    if args.debug:
+        debug_selectors(40420446)
 
-    # Step 2 — full ID scan with date filter
-    print("\n[Step 2 of 2]  Running ID scan ...\n")
-    df = run()
+    elif args.status:
+        p = load_progress()
+        print_status(p)
 
-    if not df.empty:
-        print("First 5 articles:")
-        print(df[["article_id", "date", "headline", "http_status"]]
-              .head()
-              .to_string(index=False))
+    else:
+        print("=" * 55)
+        print("  BRecorder News Extractor")
+        print(f"  Full range : {ID_SCAN_START:,} → {ID_SCAN_END:,}")
+        print(f"  Session    : {args.session_size:,} IDs this run")
+        print(f"  Output     : {OUTPUT_DIR.resolve()}")
+        print("=" * 55 + "\n")
+        run_session(session_size=args.session_size)
