@@ -3,12 +3,10 @@
 # Install: pip install -r requirements.txt
 
 # ── Phase 1: Data Acquisition ─────────────────
-playwright>=1.43.0
-playwright-stealth>=1.0.6
-cloudscraper>=1.2.71
+curl_cffi>=0.7.0       # Chrome TLS impersonation — bypasses Cloudflare fingerprinting
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
-nest_asyncio>=1.6.0
+requests>=2.32.0
 
 # ── Phase 2: FinBERT Pipeline ─────────────────
 transformers>=4.40.0
