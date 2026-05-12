@@ -59,16 +59,23 @@ log = logging.getLogger(__name__)
 # =====================================================================
 
 # --- ID range --------------------------------------------------------
-# 40000000 is the confirmed earliest accessible article.
-# ID_SCAN_END is set high — the run stops naturally at today's articles.
+# Total range split into two halves for parallel instances:
+#   Instance 1 : 40,000,000 → 40,300,000  (lower half)
+#   Instance 2 : 40,300,001 → 40,600,000  (upper half)
+# Run each in a separate PowerShell window simultaneously.
+INSTANCE_RANGES = {
+    1: (40_000_000, 40_300_000),
+    2: (40_300_001, 40_600_000),
+}
+# Defaults (overridden at runtime by --instance flag)
 ID_SCAN_START = 40_000_000
-ID_SCAN_END   = 40_600_000   # well beyond current (~40420600 as of May 2026)
+ID_SCAN_END   = 40_600_000
 
 # --- Session size ----------------------------------------------------
 # Number of IDs to attempt per run. Adjust to fit available time.
 # At ~1–2 s average per ID (mix of 404s and hits), 5000 IDs ≈ 2–3 hours.
 # Run daily or overnight until complete.
-SESSION_SIZE = 5_000
+SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
 DELAY_HIT_MIN  = 2.0   # after a successful article fetch (200)
@@ -83,8 +90,11 @@ MAX_RETRIES   = 3
 RETRY_BACKOFF = 10   # seconds × attempt number
 
 # --- Output ----------------------------------------------------------
-OUTPUT_DIR    = Path(r"G:\My Drive\Github-Cursor\Stockmarket-Sentiment-Analysis\Extracted Data")
-PROGRESS_FILE = OUTPUT_DIR / "progress.json"
+# Base output directory — each instance writes to its own subfolder
+# to avoid any file conflicts when running in parallel.
+BASE_OUTPUT_DIR = Path(r"D:\Stockmarket-Sentiment-Analysis\Extracted Data")
+OUTPUT_DIR      = BASE_OUTPUT_DIR   # overridden at runtime by --instance flag
+PROGRESS_FILE   = OUTPUT_DIR / "progress.json"
 
 BASE    = "https://www.brecorder.com"
 ART_URL = BASE + "/news/{article_id}"
@@ -466,6 +476,10 @@ if __name__ == "__main__":
         description="BRecorder news extractor — resumes automatically from last position"
     )
     parser.add_argument(
+        "--instance", type=int, choices=[1, 2], default=1,
+        help="Instance number for parallel extraction (1=lower half, 2=upper half)"
+    )
+    parser.add_argument(
         "--debug",  action="store_true",
         help="Run selector debug on article 40420446 only (no scraping)"
     )
@@ -479,6 +493,13 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # --- Apply instance settings -------------------------------------
+    global ID_SCAN_START, ID_SCAN_END, OUTPUT_DIR, PROGRESS_FILE
+    ID_SCAN_START, ID_SCAN_END = INSTANCE_RANGES[args.instance]
+    OUTPUT_DIR    = BASE_OUTPUT_DIR / f"instance_{args.instance}"
+    PROGRESS_FILE = OUTPUT_DIR / "progress.json"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     if args.debug:
         debug_selectors(40420446)
 
@@ -488,9 +509,22 @@ if __name__ == "__main__":
 
     else:
         print("=" * 55)
-        print("  BRecorder News Extractor")
-        print(f"  Full range : {ID_SCAN_START:,} → {ID_SCAN_END:,}")
-        print(f"  Session    : {args.session_size:,} IDs this run")
+        print(f"  BRecorder News Extractor  [Instance {args.instance}]")
+        print(f"  ID range   : {ID_SCAN_START:,} → {ID_SCAN_END:,}")
         print(f"  Output     : {OUTPUT_DIR.resolve()}")
-        print("=" * 55 + "\n")
-        run_session(session_size=args.session_size)
+        print("=" * 55)
+
+        # Ask user for session size interactively
+        try:
+            raw = input(f"\n  How many IDs to scan this session? "
+                        f"[default: {SESSION_SIZE:,}]: ").strip()
+            session_size = int(raw) if raw else args.session_size
+            if session_size <= 0:
+                raise ValueError
+        except ValueError:
+            print(f"  Invalid input — using default: {SESSION_SIZE:,}")
+            session_size = args.session_size
+
+        print(f"  Session    : {session_size:,} IDs (~"
+              f"{session_size/2500:.1f}–{session_size/1500:.1f} hours)\n")
+        run_session(session_size=session_size)
