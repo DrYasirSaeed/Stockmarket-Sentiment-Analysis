@@ -11,7 +11,7 @@ Description: Classifies each scraped financial news article into one of four
 """
 
 # ===============================================
-# 📌 Step 0: Import Libraries
+# Step 0: Import Libraries
 # ===============================================
 import re
 import pandas as pd
@@ -23,7 +23,7 @@ print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 # ===============================================
-# 📌 Step 1: Category Keyword Dictionaries
+# Step 1: Category Keyword Dictionaries
 # ===============================================
 # Each dictionary reflects the institutional sources and terminology
 # specific to Pakistan's macroeconomic policy environment.
@@ -105,51 +105,56 @@ print(f"Energy     : {len(ENERGY_KEYWORDS)} keywords")
 
 
 # ===============================================
-# 📌 Step 2: Classification Functions
+# Step 2: Classification Functions
 # ===============================================
 def count_keyword_hits(text: str, keywords: list) -> int:
     """
-    Count how many keywords from the category list appear in the text.
-    Case-insensitive. Partial word matches included (e.g., 'inflation'
-    matches 'hyperinflation'). Returns raw hit count for scoring.
+    Count total keyword occurrences in text (case-insensitive).
+    Uses str.count() so that multiple occurrences of the same keyword
+    accumulate — this is required for the 3x headline weighting in
+    classify_article() to have any effect.
+    Partial matches included (e.g. 'inflation' matches 'hyperinflation').
     """
     text_lower = text.lower()
-    return sum(1 for kw in keywords if kw in text_lower)
+    return sum(text_lower.count(kw) for kw in keywords)
 
 
 def classify_article(headline: str, body_text: str = "") -> dict:
     """
     Classify a news article into one of four macroeconomic topic categories.
-    Scoring: headline keywords weighted 3x relative to body text (reflects
-    editorial emphasis — headline is the most concentrated signal).
-    Returns category label and confidence scores for all four categories.
+    Headline hits are weighted 3x body hits (editorial emphasis signal).
+    Returns category label and normalised confidence scores.
     """
-    # Combine text with headline given higher weight
-    combined = f"{headline} {headline} {headline} {body_text}".lower()
+    headline_lower = headline.lower()
+    body_lower     = body_text.lower()
+
+    category_keywords = {
+        "Monetary": MONETARY_KEYWORDS,
+        "Fiscal":   FISCAL_KEYWORDS,
+        "External": EXTERNAL_FINANCE_KEYWORDS,
+        "Energy":   ENERGY_KEYWORDS,
+    }
 
     scores = {
-        "Monetary":       count_keyword_hits(combined, MONETARY_KEYWORDS),
-        "Fiscal":         count_keyword_hits(combined, FISCAL_KEYWORDS),
-        "External":       count_keyword_hits(combined, EXTERNAL_FINANCE_KEYWORDS),
-        "Energy":         count_keyword_hits(combined, ENERGY_KEYWORDS),
+        cat: count_keyword_hits(headline_lower, kws) * 3 +
+             count_keyword_hits(body_lower, kws)
+        for cat, kws in category_keywords.items()
     }
 
     total = sum(scores.values())
 
-    # Normalize to proportional confidence scores
     if total > 0:
         confidence = {k: round(v / total, 3) for k, v in scores.items()}
     else:
         confidence = {k: 0.0 for k in scores}
 
-    # Assign category — "Mixed" if no clear signal
     top_category = max(scores, key=scores.get)
     top_score    = scores[top_category]
 
     if top_score == 0:
         category = "Unclassified"
-    elif total > 0 and confidence[top_category] < 0.35:
-        category = "Mixed"  # No dominant category — flag for manual review
+    elif confidence[top_category] < 0.35:
+        category = "Mixed"   # No dominant category — flag for manual review
     else:
         category = top_category
 
@@ -161,7 +166,7 @@ def classify_article(headline: str, body_text: str = "") -> dict:
 
 
 # ===============================================
-# 📌 Step 3: Batch Classification Pipeline
+# Step 3: Batch Classification Pipeline
 # ===============================================
 def classify_corpus(df: pd.DataFrame,
                     headline_col: str = "headline",
@@ -169,7 +174,7 @@ def classify_corpus(df: pd.DataFrame,
     """
     Classify an entire article corpus.
     Expects a DataFrame with headline and body_text columns.
-    Returns DataFrame with four new columns added:
+    Returns DataFrame with five new columns:
       - topic_category   : primary classification label
       - conf_monetary    : confidence score for Monetary category
       - conf_fiscal      : confidence score for Fiscal category
@@ -179,7 +184,7 @@ def classify_corpus(df: pd.DataFrame,
     print(f"\n--- Classifying {len(df)} articles ---")
     results = []
 
-    for i, row in df.iterrows():
+    for i, (_, row) in enumerate(df.iterrows()):
         headline  = str(row.get(headline_col, ""))
         body_text = str(row.get(body_col, ""))
         result    = classify_article(headline, body_text)
@@ -204,7 +209,7 @@ def classify_corpus(df: pd.DataFrame,
 
 
 # ===============================================
-# 📌 Step 4: Validation Against Labelled Sample
+# Step 4: Validation Against Labelled Sample
 # ===============================================
 def validate_classifier(labelled_df: pd.DataFrame,
                          true_label_col: str = "true_category") -> dict:
@@ -214,8 +219,8 @@ def validate_classifier(labelled_df: pd.DataFrame,
     Target: minimum 300 labelled headlines per proposal specification.
 
     Decision rule for academic reporting:
-      Precision >= 0.75 and Recall >= 0.70 → Category accepted for analysis
-      Below threshold → Category keywords require refinement
+      Precision >= 0.75 and Recall >= 0.70 -> Category accepted for analysis
+      Below threshold -> Category keywords require refinement
     """
     from sklearn.metrics import classification_report
 
@@ -234,15 +239,15 @@ def validate_classifier(labelled_df: pd.DataFrame,
             p = report[category]["precision"]
             r = report[category]["recall"]
             f = report[category]["f1-score"]
-            decision = "✓ Accepted" if p >= 0.75 and r >= 0.70 else "✗ Refine keywords"
-            print(f"  {category:<16} P={p:.3f}  R={r:.3f}  F1={f:.3f}  → {decision}")
+            decision = "Accepted" if p >= 0.75 and r >= 0.70 else "Refine keywords"
+            print(f"  {category:<16} P={p:.3f}  R={r:.3f}  F1={f:.3f}  -> {decision}")
 
     print(f"\n  Overall Accuracy: {report['accuracy']:.3f}")
     return report
 
 
 # ===============================================
-# 📌 Step 5: Demo — Single Article Classification
+# Step 5: Demo
 # ===============================================
 if __name__ == "__main__":
     print("\n--- Demo: Single Article Classification ---")
@@ -250,19 +255,27 @@ if __name__ == "__main__":
     test_articles = [
         {
             "headline":  "SBP cuts policy rate by 100bps to 15 percent amid falling inflation",
-            "body_text": "The State Bank of Pakistan's Monetary Policy Committee reduced the benchmark interest rate by 100 basis points to 15 percent on Friday, citing a significant deceleration in headline CPI inflation."
+            "body_text": "The State Bank of Pakistan's Monetary Policy Committee reduced the "
+                         "benchmark interest rate by 100 basis points to 15 percent on Friday, "
+                         "citing a significant deceleration in headline CPI inflation."
         },
         {
             "headline":  "FBR misses revenue target by Rs180 billion in first quarter",
-            "body_text": "The Federal Board of Revenue collected Rs1.7 trillion in the first quarter against a target of Rs1.88 trillion, widening the fiscal deficit ahead of the IMF programme review."
+            "body_text": "The Federal Board of Revenue collected Rs1.7 trillion in the first "
+                         "quarter against a target of Rs1.88 trillion, widening the fiscal "
+                         "deficit ahead of the IMF programme review."
         },
         {
             "headline":  "IMF approves $1.1 billion tranche for Pakistan under EFF",
-            "body_text": "The International Monetary Fund's executive board completed the second review under the Extended Fund Facility, approving disbursement of approximately $1.1 billion to Pakistan."
+            "body_text": "The International Monetary Fund's executive board completed the second "
+                         "review under the Extended Fund Facility, approving disbursement of "
+                         "approximately $1.1 billion to Pakistan."
         },
         {
             "headline":  "NEPRA approves 18 percent electricity tariff increase",
-            "body_text": "The National Electric Power Regulatory Authority approved an 18 percent increase in base electricity tariff effective next month to address mounting circular debt in the power sector."
+            "body_text": "The National Electric Power Regulatory Authority approved an 18 percent "
+                         "increase in base electricity tariff effective next month to address "
+                         "mounting circular debt in the power sector."
         },
     ]
 

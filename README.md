@@ -1,5 +1,5 @@
-# 📌 Information Transmission and Sectoral Asymmetry in the KSE-100
-## A Topic-Routed Sentiment Analysis with DCC-GARCH and Panel VAR
+# Information Transmission and Sectoral Asymmetry in the KSE-100
+## A Topic-Routed Sentiment Analysis with Panel VAR
 
 **Author:** Dr. Yasir Saeed  
 **Affiliation:** Department of Economics, Kohat University of Science & Technology (KUST), KPK, Pakistan  
@@ -8,7 +8,7 @@
 
 ---
 
-## 🔍 Research Overview
+## Research Overview
 
 This repository contains the full computational pipeline for research on **how macroeconomic sentiment extracted from Pakistan's financial news media transmits into equity returns and volatility across five major sectors of the KSE-100 Index**.
 
@@ -22,29 +22,36 @@ The central argument is that treating sentiment as a single composite signal is 
 Phase 0 — Data Acquisition (news_extractor.py)
 ├── Source  : Business Recorder (brecorder.com)
 ├── Method  : Sequential article ID scan + curl_cffi Chrome TLS impersonation
-├── Coverage: January 2023 – December 2024
-└── Output  : brecorder_articles.csv  (article_id, date, headline, body_text, author)
-        ↓
+├── Coverage: June 2020 to present (~40,000,000 onwards)
+└── Output  : brecorder_YYYY_MM.csv  (article_id, date, headline, body_text, author)
+        |
+        v
 Phase 1 — Topic Router (topic_router.py)
 ├── Keyword classifier: Monetary | Fiscal | External Finance | Energy
-├── Headline weighted 3× body text (editorial emphasis signal)
+├── Headline weighted 3x body text (editorial emphasis signal)
 ├── Validation: precision/recall against 300-article labelled sample
-└── Output  : Classified corpus with per-category confidence scores
-        ↓
-Phase 2 — FinBERT Sentiment Pipeline (finbert_scorer.py)
-├── ProsusAI/finbert — finance-domain BERT model
-├── Signed sentiment score ∈ [−1, +1] per article
-└── Output  : 4 daily sentiment series (S_Monetary, S_Fiscal, S_External, S_Energy)
-        ↓
-Phase 3 — DCC-GARCH Estimation
-├── Asymmetric event window: [t−n, t+k] — empirically selected via AIC/BIC
-├── 5 sectors × 4 sentiment categories = 20 sector-category pairs
-└── Output  : Time-varying correlations across 3 macroeconomic regimes
-        ↓
-Phase 4 — Panel VAR + Granger Causality (panel_var_estimator.py)
-├── Impulse Response Functions (IRFs) — directional transmission
-├── Forecast Error Variance Decomposition (FEVD) — magnitude ranking
-└── Output  : Sectoral Sensitivity Matrix (sectoral_sensitivity_matrix.py)
+└── Output  : classified_articles.csv  (+ topic_category, confidence scores)
+        |
+        v
+Phase 2 — FinBERT Sentiment Scoring (finbert_scorer.py)
+├── Model   : ProsusAI/finbert (Araci, 2019)
+├── Signed sentiment score in [-1, +1] per article
+├── Aggregated to value-weighted daily series
+└── Output  : daily_sentiment.xlsx  (S_Monetary, S_Fiscal, S_External, S_Energy)
+        |
+        v
+Phase 3 — Panel VAR + Granger Causality (panel_var_estimator.py)
+├── Lag order selected by AIC
+├── Granger causality: which sentiment categories lead which sectors
+├── Impulse Response Functions (IRFs): directional transmission
+├── Forecast Error Variance Decomposition (FEVD): magnitude ranking
+└── Output  : granger_causality.xlsx | irf_plots.png | fevd_results.xlsx
+        |
+        v
+Phase 4 — Sectoral Sensitivity Matrix (sectoral_sensitivity_matrix.py)
+├── Synthesizes Phase 3 outputs into one structured table
+├── 20 sector-category pairs (5 sectors x 4 sentiment categories)
+└── Output  : sectoral_sensitivity_matrix.xlsx | heatmap.png
 ```
 
 ---
@@ -54,20 +61,20 @@ Phase 4 — Panel VAR + Granger Causality (panel_var_estimator.py)
 ```
 Stockmarket-Sentiment-Analysis/
 │
-├── news_extractor.py            ← Phase 0: BRecorder article scraper
-├── topic_router.py              ← Phase 1: Keyword topic classifier
-├── finbert_scorer.py            ← Phase 2: FinBERT sentiment scoring
-├── panel_var_estimator.py       ← Phase 4: Panel VAR + Granger causality
-├── sectoral_sensitivity_matrix.py  ← Phase 5: Results output
+├── news_extractor.py               <- Phase 0: BRecorder article scraper
+├── topic_router.py                 <- Phase 1: Keyword topic classifier
+├── finbert_scorer.py               <- Phase 2: FinBERT sentiment scoring
+├── panel_var_estimator.py          <- Phase 3: Panel VAR + Granger causality
+├── sectoral_sensitivity_matrix.py  <- Phase 4: Results synthesis
 │
-├── requirements.txt             ← All Python dependencies
+├── requirements.txt                <- All Python dependencies
 ├── LICENSE
 └── README.md
 ```
 
 ---
 
-## 📊 Target Sectors and Sentiment Categories
+## Target Sectors and Sentiment Categories
 
 | Sector | KSE-100 Weight | Expected Primary Channel |
 |---|---|---|
@@ -90,48 +97,48 @@ Stockmarket-Sentiment-Analysis/
 
 ## Econometric Framework
 
-**DCC-GARCH** (Engle, 2002) captures time-varying co-movement between sentiment shocks and sectoral return volatility across three macroeconomic regimes: pre-tightening (2014–2021), SBP tightening cycle (2022–2023), and easing phase (2024–2025).
+**Panel VAR** (Holtz-Eakin, Newey & Rosen, 1988) identifies directional transmission — which sentiment categories Granger-cause which sectors, at what lag, and with what persistence. Lag order is selected empirically via AIC minimisation.
 
-**Panel VAR** (Holtz-Eakin, Newey & Rosen, 1988) identifies directional transmission — which sentiment categories Granger-cause which sectors, at what lag, and with what persistence.
+**Impulse Response Functions (IRFs)** trace the dynamic response of each sector's return to a one-standard-deviation shock in each sentiment category over a 22-trading-day horizon.
 
-**Asymmetric Event Window [t−n, t+k]** where n and k are selected empirically through AIC/BIC minimisation per sector-category pair. The pre-publication window (t−n) tests for informational leakage — a direct examination of weak-form efficiency in a frontier market.
+**Forecast Error Variance Decomposition (FEVD)** quantifies the share of sectoral return variance attributable to each macroeconomic sentiment category at horizons of 1, 5, and 22 trading days — providing a magnitude ranking of policy channel importance across sectors.
+
+**Asymmetric Event Window** analysis uses IRF peak timing to identify whether sentiment absorption is instantaneous (t=1–3, efficient) or delayed (t=5–22, illiquid), and whether pre-announcement leakage is detectable (IRF peak before t=0).
 
 ---
 
-## 🚧 Current Status
+## Current Status
 
 | Module | File | Status | Note |
 |---|---|---|---|
-| Phase 0 — Data Acquisition | `news_extractor.py` | ✅ Working | ID-scan pipeline; curl_cffi TLS bypass confirmed working locally |
-| Phase 1 — Topic Router | `topic_router.py` | ✅ Ready | Keyword classifier validated; headline 3× weighting fixed |
-| Phase 2 — FinBERT Scoring | `finbert_scorer.py` | ✅ Ready | Tested on sample data |
-| Phase 3 — DCC-GARCH | — | 🔄 In progress | Framework structured, awaiting full corpus |
-| Phase 4 — Panel VAR | `panel_var_estimator.py` | 🔄 In progress | Framework structured, awaiting corpus |
-| Phase 5 — Results | `sectoral_sensitivity_matrix.py` | ⏳ Pending | Awaiting upstream modules |
+| Phase 0 — Data Acquisition | `news_extractor.py` | Running | Parallel ID-scan; resumable; writing to monthly CSVs |
+| Phase 1 — Topic Router | `topic_router.py` | Ready | Keyword classifier; 3x headline weighting |
+| Phase 2 — FinBERT Scoring | `finbert_scorer.py` | Ready | Tested on sample data |
+| Phase 3 — Panel VAR | `panel_var_estimator.py` | Ready | Awaiting completed corpus |
+| Phase 4 — Sensitivity Matrix | `sectoral_sensitivity_matrix.py` | Ready | Awaiting Phase 3 outputs |
 
 ---
 
-## ⚙️ Setup and Usage
+## Setup and Usage
 
-### Requirements
+### Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Phase 0 — Extract news articles
+### Phase 0 — Extract articles (run from home/university network)
 
 ```python
-# Edit date range and ID window in news_extractor.py, then:
-python news_extractor.py
-# Output: brecorder_articles.csv
+python news_extractor.py              # resumes automatically from last position
+python news_extractor.py --status     # check progress without scraping
+python news_extractor.py --instance 2 # run second parallel instance
 ```
 
-> **Important:** Run from a home or university network, not from Google Colab or any cloud
-> server. Cloudflare blocks datacenter IPs regardless of scraping library used.
-> `curl_cffi` impersonates Chrome's TLS fingerprint and works reliably from residential IPs.
+> Cloudflare blocks datacenter IPs (Colab, AWS, etc.) regardless of library used.
+> `curl_cffi` impersonates Chrome's TLS fingerprint and works from residential IPs.
 
-### Phase 1 — Classify articles by topic
+### Phase 1 — Classify articles
 
 ```python
 from topic_router import classify_corpus
@@ -145,28 +152,26 @@ classified.to_csv("classified_articles.csv", index=False)
 ### Phase 2 — Score sentiment
 
 ```python
-from finbert_scorer import score_corpus
-import pandas as pd
-
-df = pd.read_csv("classified_articles.csv")
-scored = score_corpus(df)
-scored.to_csv("scored_articles.csv", index=False)
+python finbert_scorer.py
+# Input : classified_articles.csv
+# Output: daily_sentiment.xlsx
 ```
 
----
+### Phase 3 — Panel VAR
 
-## Notes on Data Acquisition
+```python
+python panel_var_estimator.py
+# Input : panel_data.xlsx  (KSE-100 returns merged with daily_sentiment.xlsx)
+# Output: granger_causality.xlsx, irf_plots.png, fevd_results.xlsx
+```
 
-Early versions of the scraper used `cloudscraper` and `playwright-stealth` to bypass
-Cloudflare, but both failed when run from Google Colab because Cloudflare's Bot Management
-blocklists Google Cloud datacenter IP ranges at the network level — no library-level bypass
-can overcome an IP-level block.
+### Phase 4 — Sensitivity Matrix
 
-The current `news_extractor.py` uses `curl_cffi` which impersonates Chrome's exact TLS
-handshake (JA3 fingerprint). When run from a residential or university IP this passes
-Cloudflare's checks reliably. The scraper scans sequential BRecorder article IDs
-(`brecorder.com/news/<id>`), applies a date filter, and saves results with periodic
-checkpoints so a crash does not lose progress.
+```python
+python sectoral_sensitivity_matrix.py
+# Input : fevd_results.xlsx, granger_causality.xlsx
+# Output: sectoral_sensitivity_matrix.xlsx, sectoral_sensitivity_heatmap.png
+```
 
 ---
 

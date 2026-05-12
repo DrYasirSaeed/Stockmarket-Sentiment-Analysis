@@ -10,16 +10,13 @@ lxml>=5.0.0
 requests>=2.32.0
 
 # ── Phase 1: Topic Router ─────────────────────
-scikit-learn>=1.4.0     # Used in classifier validation (precision/recall/F1)
+scikit-learn>=1.4.0     # Classifier validation (precision/recall/F1)
 
-# ── Phase 2: FinBERT Pipeline ─────────────────
+# ── Phase 2: FinBERT Sentiment Scoring ────────
 transformers>=4.40.0
 torch>=2.0.0
 
-# ── Phase 3: DCC-GARCH ────────────────────────
-arch>=6.3.0             # Kevin Sheppard's ARCH library
-
-# ── Phase 4: Panel VAR ────────────────────────
+# ── Phase 3: Panel VAR ────────────────────────
 statsmodels>=0.14.0
 
 # ── Shared: Data and Visualization ───────────
