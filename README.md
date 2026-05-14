@@ -97,7 +97,7 @@ Stockmarket-Sentiment-Analysis/
 
 ## Econometric Framework
 
-**Panel VAR** (Holtz-Eakin, Newey & Rosen, 1988) identifies directional transmission — which sentiment categories Granger-cause which sectors, at what lag, and with what persistence. Lag order is selected empirically via AIC minimisation.
+**Panel VAR** (Holtz-Eakin, Newey & Rosen, 1988) identifies directional transmission  which sentiment categories Granger-cause which sectors, at what lag, and with what persistence. Lag order is selected empirically via AIC minimisation.
 
 **Impulse Response Functions (IRFs)** trace the dynamic response of each sector's return to a one-standard-deviation shock in each sentiment category over a 22-trading-day horizon.
 
@@ -127,7 +127,7 @@ Stockmarket-Sentiment-Analysis/
 pip install -r requirements.txt
 ```
 
-### Phase 0 — Extract articles (run from home/university network)
+### Phase 0 — Extract articles (run from home/university network) (IN Progress)
 
 ```python
 python news_extractor.py              # resumes automatically from last position
@@ -138,7 +138,7 @@ python news_extractor.py --instance 2 # run second parallel instance
 > Cloudflare blocks datacenter IPs (Colab, AWS, etc.) regardless of library used.
 > `curl_cffi` impersonates Chrome's TLS fingerprint and works from residential IPs.
 
-### Phase 1 — Classify articles
+### Phase 1 — Classify articles (possible alternative, BERTopic to remove uneccsary topics and to choose the right group) 
 
 ```python
 from topic_router import classify_corpus
@@ -149,7 +149,7 @@ classified = classify_corpus(df)
 classified.to_csv("classified_articles.csv", index=False)
 ```
 
-### Phase 2 — Score sentiment
+### Phase 2 — Score sentiment (Key Challenge, Training Finbert for local conetext)
 
 ```python
 python finbert_scorer.py
