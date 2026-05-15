@@ -33,7 +33,8 @@ import random
 import logging
 import argparse
 import sys
-from datetime import datetime, date
+import gc
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 import requests
@@ -78,16 +79,27 @@ ID_SCAN_END   = 40_600_000
 SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
-DELAY_HIT_MIN  = 2.0   # after a successful article fetch (200)
-DELAY_HIT_MAX  = 5.0
-DELAY_MISS_MIN = 0.3   # after a 404 — keep the scan moving quickly
-DELAY_MISS_MAX = 0.8
+DELAY_HIT_MIN  = 1.5   # after a successful article fetch (200)
+DELAY_HIT_MAX  = 3.0
+DELAY_MISS_MIN = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
+DELAY_MISS_MAX = 0.3
 DELAY_ERR_MIN  = 8.0   # after a 403 / network error — back off
 DELAY_ERR_MAX  = 15.0
 
+# --- Adaptive delay bounds -------------------------------------------
+ADAPTIVE_DELAY_MIN = 0.8   # floor: never go below this on hits
+ADAPTIVE_DELAY_MAX = 5.0   # ceiling: never go above this on hits
+ADAPTIVE_STEP_DOWN = 0.1   # reduce delay by this after each clean 200
+ADAPTIVE_STEP_UP   = 0.5   # increase delay by this after each 403
+
+# --- Smart gap skipping ----------------------------------------------
+GAP_TRIGGER = 50    # consecutive 404s before skipping
+GAP_SKIP    = 200   # IDs to jump forward when gap detected
+
 # --- Retry policy ----------------------------------------------------
-MAX_RETRIES   = 3
-RETRY_BACKOFF = 10   # seconds × attempt number
+MAX_RETRIES         = 3
+RETRY_BACKOFF_403   = [7, 12, 33]   # seconds per attempt: quick first, escalate if persists
+RETRY_BACKOFF_OTHER = [7, 12, 33]   # same progression for non-403 errors
 
 # --- Output ----------------------------------------------------------
 # Base output directory — each instance writes to its own subfolder
@@ -289,21 +301,23 @@ def fetch_article(session, article_id: int) -> dict:
         "date":        "",
         "author":      "",
         "http_status": 0,
-        "scraped_at":  datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "scraped_at":  datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            r = session.get(url, timeout=25, allow_redirects=True)
+            r = session.get(url, timeout=75, allow_redirects=True)
             result["http_status"] = r.status_code
 
             if r.status_code == 404:
                 return result
 
             if r.status_code == 403:
-                log.warning(f"  [{article_id}] 403 (attempt {attempt}/{MAX_RETRIES})")
+                wait = RETRY_BACKOFF_403[attempt - 1]
+                log.warning(f"  [{article_id}] 403 (attempt {attempt}/{MAX_RETRIES})"
+                            f" — retrying in {wait}s")
                 if attempt < MAX_RETRIES:
-                    time.sleep(RETRY_BACKOFF * attempt)
+                    time.sleep(wait)
                     continue
                 return result
 
@@ -317,7 +331,7 @@ def fetch_article(session, article_id: int) -> dict:
         except Exception as exc:
             log.warning(f"  [{article_id}] Error (attempt {attempt}): {exc}")
             if attempt < MAX_RETRIES:
-                time.sleep(RETRY_BACKOFF * attempt)
+                time.sleep(RETRY_BACKOFF_OTHER[attempt - 1])
 
     return result
 
@@ -332,6 +346,15 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     stopped. Saves each article immediately to its monthly CSV and
     updates progress.json every 100 IDs.
 
+    Speed optimisations active:
+      Strategy 1 — Smart gap skipping : after GAP_TRIGGER consecutive 404s,
+                   jump article_id forward by GAP_SKIP to skip sparse regions.
+      Strategy 2 — Adaptive delay     : hit delay floats between
+                   ADAPTIVE_DELAY_MIN and ADAPTIVE_DELAY_MAX, stepping down
+                   after each clean 200 and up after each 403.
+      Strategy 3 — Fast 404 delay     : Cloudflare resolves 404s at the edge;
+                   only 0.1–0.3 s sleep needed (no origin hit).
+
     Run this script repeatedly (daily, overnight) until complete.
     Each run picks up exactly where the last one ended.
     """
@@ -339,7 +362,6 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     progress = load_progress()
 
     resume_from = progress["last_scanned_id"] + 1
-    scan_to     = min(resume_from + session_size - 1, ID_SCAN_END)
 
     if resume_from > ID_SCAN_END:
         log.info("All IDs scanned — extraction complete.")
@@ -348,21 +370,41 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
 
     session = make_session()
 
-    ids_attempted  = 0
-    hits           = 0   # 200 responses
-    misses         = 0   # 404 responses
-    blocked        = 0   # 403 responses
+    ids_attempted    = 0
+    hits             = 0    # 200 responses
+    misses           = 0    # 404 responses
+    blocked          = 0    # 403 responses
     session_articles = 0
+    gaps_skipped     = 0    # times gap-skip triggered
 
-    log.info(f"Session: scanning IDs {resume_from} → {scan_to}  "
-             f"({scan_to - resume_from + 1} IDs)")
+    # Strategy 1: gap skipping state
+    consecutive_misses = 0
 
-    for article_id in range(resume_from, scan_to + 1):
+    # Strategy 2: adaptive delay — starts at DELAY_HIT_MIN, floats from there
+    current_delay = DELAY_HIT_MIN
+
+    log.info(f"Session: scanning up to {session_size:,} IDs from {resume_from:,}")
+    log.info(f"  Adaptive delay start : {current_delay:.1f}s  "
+             f"[{ADAPTIVE_DELAY_MIN}–{ADAPTIVE_DELAY_MAX}]")
+    log.info(f"  Gap skip trigger     : {GAP_TRIGGER} consecutive 404s "
+             f"→ jump +{GAP_SKIP} IDs")
+
+    # ----- while loop (replaces for loop to support gap skipping) -----
+    article_id = resume_from
+
+    while article_id <= ID_SCAN_END and ids_attempted < session_size:
         ids_attempted += 1
         result = fetch_article(session, article_id)
         status = result["http_status"]
 
         if status == 200:
+            # ── Strategy 1: reset miss counter on a real article ──
+            consecutive_misses = 0
+
+            # ── Strategy 2: speed up — server is fine, reduce delay ──
+            current_delay = max(ADAPTIVE_DELAY_MIN,
+                                current_delay - ADAPTIVE_STEP_DOWN)
+
             hits += 1
             month_key = result["date"][:7] if result["date"] else "unknown"
             progress["month_counts"][month_key] = (
@@ -374,19 +416,37 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
             append_to_monthly_csv(result)
 
             log.info(f"  {article_id}  SAVED  {result['date']}  "
-                     f"\"{result['headline'][:65]}\"")
+                     f"\"{result['headline'][:65]}\"  "
+                     f"[delay={current_delay:.1f}s]")
 
-            time.sleep(random.uniform(DELAY_HIT_MIN, DELAY_HIT_MAX))
+            time.sleep(random.uniform(current_delay, current_delay + 1.0))
 
         elif status == 404:
+            # ── Strategy 1: count misses; skip ahead when gap detected ──
+            consecutive_misses += 1
             misses += 1
-            log.debug(f"  {article_id}  404")
+            log.debug(f"  {article_id}  404  [streak={consecutive_misses}]")
+
+            if consecutive_misses >= GAP_TRIGGER:
+                log.info(f"  {consecutive_misses} consecutive 404s detected — "
+                         f"skipping {GAP_SKIP} IDs ahead")
+                article_id += GAP_SKIP
+                consecutive_misses = 0
+                gaps_skipped += 1
+
+            # ── Strategy 3: fast 404 delay (Cloudflare edge, no origin) ──
             time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
         elif status == 403:
+            # ── Strategy 2: slow down — server is pushing back ──
+            consecutive_misses = 0
+            current_delay = min(ADAPTIVE_DELAY_MAX,
+                                current_delay + ADAPTIVE_STEP_UP)
+
             blocked += 1
             log.warning(f"  {article_id}  BLOCKED (403) — "
-                        f"backing off {DELAY_ERR_MAX:.0f}s")
+                        f"backing off {DELAY_ERR_MAX:.0f}s  "
+                        f"[delay raised to {current_delay:.1f}s]")
             time.sleep(random.uniform(DELAY_ERR_MIN, DELAY_ERR_MAX))
 
         else:
@@ -399,18 +459,30 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
             save_progress(progress)
             log.info(f"  --- Progress saved  "
                      f"[session: {session_articles} articles | "
-                     f"total: {progress['total_articles']}] ---")
+                     f"total: {progress['total_articles']} | "
+                     f"delay: {current_delay:.1f}s] ---")
+
+        # Every 500 IDs: clear session cookies and run garbage collection
+        # to prevent curl_cffi accumulating session data and growing C: drive
+        if ids_attempted % 500 == 0:
+            session.cookies.clear()
+            gc.collect()
+            log.info(f"  --- Memory cleanup done (cookies cleared, GC run) ---")
+
+        article_id += 1
 
     # Final save
     save_progress(progress)
 
-    remaining = ID_SCAN_END - scan_to
+    remaining = ID_SCAN_END - progress["last_scanned_id"]
     print(f"\n{'='*55}")
     print(f"  Session complete")
     print(f"  IDs scanned this session : {ids_attempted:,}")
     print(f"  Articles saved           : {session_articles:,}")
     print(f"  404 (no article)         : {misses:,}")
     print(f"  Blocked (403)            : {blocked:,}")
+    print(f"  Gap skips triggered      : {gaps_skipped:,}")
+    print(f"  Final adaptive delay     : {current_delay:.1f}s")
     print(f"  Total articles so far    : {progress['total_articles']:,}")
     print(f"  IDs remaining            : {remaining:,}")
     pct = (progress["last_scanned_id"] - ID_SCAN_START + 1) / \
@@ -494,7 +566,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # --- Apply instance settings -------------------------------------
-    global ID_SCAN_START, ID_SCAN_END, OUTPUT_DIR, PROGRESS_FILE
     ID_SCAN_START, ID_SCAN_END = INSTANCE_RANGES[args.instance]
     OUTPUT_DIR    = BASE_OUTPUT_DIR / f"instance_{args.instance}"
     PROGRESS_FILE = OUTPUT_DIR / "progress.json"
