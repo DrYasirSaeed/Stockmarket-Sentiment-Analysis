@@ -69,8 +69,9 @@ INSTANCE_RANGES = {
     2: (40_300_001, 40_600_000),
 }
 # Defaults (overridden at runtime by --instance flag)
-ID_SCAN_START = 40_000_000
-ID_SCAN_END   = 40_600_000
+ID_SCAN_START     = 40_000_000
+ID_SCAN_END       = 40_600_000
+_current_instance = 1   # updated at runtime; used in restart message
 
 # --- Session size ----------------------------------------------------
 # Number of IDs to attempt per run. Adjust to fit available time.
@@ -392,92 +393,123 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     # ----- while loop (replaces for loop to support gap skipping) -----
     article_id = resume_from
 
-    while article_id <= ID_SCAN_END and ids_attempted < session_size:
-        ids_attempted += 1
-        result = fetch_article(session, article_id)
-        status = result["http_status"]
+    try:
+        while article_id <= ID_SCAN_END and ids_attempted < session_size:
+            ids_attempted += 1
+            result = fetch_article(session, article_id)
+            status = result["http_status"]
 
-        if status == 200:
-            # ── Strategy 1: reset miss counter on a real article ──
-            consecutive_misses = 0
-
-            # ── Strategy 2: speed up — server is fine, reduce delay ──
-            current_delay = max(ADAPTIVE_DELAY_MIN,
-                                current_delay - ADAPTIVE_STEP_DOWN)
-
-            hits += 1
-            month_key = result["date"][:7] if result["date"] else "unknown"
-            progress["month_counts"][month_key] = (
-                progress["month_counts"].get(month_key, 0) + 1
-            )
-            progress["total_articles"] += 1
-            session_articles += 1
-
-            append_to_monthly_csv(result)
-
-            log.info(f"  {article_id}  SAVED  {result['date']}  "
-                     f"\"{result['headline'][:65]}\"  "
-                     f"[delay={current_delay:.1f}s]")
-
-            time.sleep(random.uniform(current_delay, current_delay + 1.0))
-
-        elif status == 404:
-            # ── Strategy 1: count misses; skip ahead when gap detected ──
-            consecutive_misses += 1
-            misses += 1
-            log.debug(f"  {article_id}  404  [streak={consecutive_misses}]")
-
-            if consecutive_misses >= GAP_TRIGGER:
-                log.info(f"  {consecutive_misses} consecutive 404s detected — "
-                         f"skipping {GAP_SKIP} IDs ahead")
-                article_id += GAP_SKIP
+            if status == 200:
+                # ── Strategy 1: reset miss counter on a real article ──
                 consecutive_misses = 0
-                gaps_skipped += 1
 
-            # ── Strategy 3: fast 404 delay (Cloudflare edge, no origin) ──
-            time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
+                # ── Strategy 2: speed up — server is fine, reduce delay ──
+                current_delay = max(ADAPTIVE_DELAY_MIN,
+                                    current_delay - ADAPTIVE_STEP_DOWN)
 
-        elif status == 403:
-            # ── Strategy 2: slow down — server is pushing back ──
-            consecutive_misses = 0
-            current_delay = min(ADAPTIVE_DELAY_MAX,
-                                current_delay + ADAPTIVE_STEP_UP)
+                hits += 1
+                month_key = result["date"][:7] if result["date"] else "unknown"
+                progress["month_counts"][month_key] = (
+                    progress["month_counts"].get(month_key, 0) + 1
+                )
+                progress["total_articles"] += 1
+                session_articles += 1
 
-            blocked += 1
-            log.warning(f"  {article_id}  BLOCKED (403) — "
-                        f"backing off {DELAY_ERR_MAX:.0f}s  "
-                        f"[delay raised to {current_delay:.1f}s]")
-            time.sleep(random.uniform(DELAY_ERR_MIN, DELAY_ERR_MAX))
+                append_to_monthly_csv(result)
 
-        else:
-            log.warning(f"  {article_id}  HTTP {status}")
-            time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
+                session_pct = ids_attempted / session_size * 100
+                overall_pct = (article_id - ID_SCAN_START + 1) / \
+                              (ID_SCAN_END - ID_SCAN_START + 1) * 100
+                log.info(f"  {article_id}  SAVED  {result['date']}  "
+                         f"\"{result['headline'][:55]}\"  "
+                         f"[session {session_pct:.1f}% | overall {overall_pct:.1f}% | "
+                         f"delay={current_delay:.1f}s]")
 
-        # Save progress every 100 IDs
+                time.sleep(random.uniform(current_delay, current_delay + 1.0))
+
+            elif status == 404:
+                # ── Strategy 1: count misses; skip ahead when gap detected ──
+                consecutive_misses += 1
+                misses += 1
+                log.debug(f"  {article_id}  404  [streak={consecutive_misses}]")
+
+                if consecutive_misses >= GAP_TRIGGER:
+                    log.info(f"  {consecutive_misses} consecutive 404s detected — "
+                             f"skipping {GAP_SKIP} IDs ahead")
+                    article_id += GAP_SKIP
+                    consecutive_misses = 0
+                    gaps_skipped += 1
+
+                # ── Strategy 3: fast 404 delay (Cloudflare edge, no origin) ──
+                time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
+
+            elif status == 403:
+                # ── Strategy 2: slow down — server is pushing back ──
+                consecutive_misses = 0
+                current_delay = min(ADAPTIVE_DELAY_MAX,
+                                    current_delay + ADAPTIVE_STEP_UP)
+
+                blocked += 1
+                log.warning(f"  {article_id}  BLOCKED (403) — "
+                            f"backing off {DELAY_ERR_MAX:.0f}s  "
+                            f"[delay raised to {current_delay:.1f}s]")
+                time.sleep(random.uniform(DELAY_ERR_MIN, DELAY_ERR_MAX))
+
+            else:
+                log.warning(f"  {article_id}  HTTP {status}")
+                time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
+
+            # Save progress every 100 IDs
+            progress["last_scanned_id"] = article_id
+            if ids_attempted % 100 == 0:
+                save_progress(progress)
+                session_pct = ids_attempted / session_size * 100
+                overall_pct = (article_id - ID_SCAN_START + 1) / \
+                              (ID_SCAN_END - ID_SCAN_START + 1) * 100
+                log.info(f"  --- Progress saved  "
+                         f"[session {session_pct:.1f}% | overall {overall_pct:.1f}% | "
+                         f"{session_articles} articles this session | "
+                         f"total: {progress['total_articles']} | "
+                         f"delay: {current_delay:.1f}s] ---")
+
+            # Every 500 IDs: clear session cookies and run garbage collection
+            # to prevent curl_cffi accumulating session data and growing C: drive
+            if ids_attempted % 500 == 0:
+                session.cookies.clear()
+                gc.collect()
+                log.info(f"  --- Memory cleanup done (cookies cleared, GC run) ---")
+
+            article_id += 1
+
+    except KeyboardInterrupt:
+        print(f"\n\n  Ctrl+C detected — saving progress and stopping cleanly...")
         progress["last_scanned_id"] = article_id
-        if ids_attempted % 100 == 0:
-            save_progress(progress)
-            log.info(f"  --- Progress saved  "
-                     f"[session: {session_articles} articles | "
-                     f"total: {progress['total_articles']} | "
-                     f"delay: {current_delay:.1f}s] ---")
-
-        # Every 500 IDs: clear session cookies and run garbage collection
-        # to prevent curl_cffi accumulating session data and growing C: drive
-        if ids_attempted % 500 == 0:
-            session.cookies.clear()
-            gc.collect()
-            log.info(f"  --- Memory cleanup done (cookies cleared, GC run) ---")
-
-        article_id += 1
+        save_progress(progress)
+        session_pct = ids_attempted / session_size * 100
+        overall_pct = (article_id - ID_SCAN_START + 1) / \
+                      (ID_SCAN_END - ID_SCAN_START + 1) * 100
+        print(f"\n{'='*55}")
+        print(f"  Interrupted at ID     : {article_id:,}")
+        print(f"  Session progress      : {session_pct:.1f}%  ({ids_attempted:,} / {session_size:,} IDs)")
+        print(f"  Overall progress      : {overall_pct:.1f}%")
+        print(f"  Articles this session : {session_articles:,}")
+        print(f"  Total articles saved  : {progress['total_articles']:,}")
+        print(f"\n  Progress saved. To resume, run:")
+        print(f"\n      python news_extractor.py --instance {_current_instance}")
+        print(f"\n{'='*55}\n")
+        return
 
     # Final save
     save_progress(progress)
 
     remaining = ID_SCAN_END - progress["last_scanned_id"]
+    session_pct = ids_attempted / session_size * 100
+    overall_pct = (progress["last_scanned_id"] - ID_SCAN_START + 1) / \
+                  (ID_SCAN_END - ID_SCAN_START + 1) * 100
     print(f"\n{'='*55}")
     print(f"  Session complete")
-    print(f"  IDs scanned this session : {ids_attempted:,}")
+    print(f"  Session progress         : {session_pct:.1f}%  ({ids_attempted:,} IDs)")
+    print(f"  Overall progress         : {overall_pct:.1f}%")
     print(f"  Articles saved           : {session_articles:,}")
     print(f"  404 (no article)         : {misses:,}")
     print(f"  Blocked (403)            : {blocked:,}")
@@ -485,12 +517,10 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     print(f"  Final adaptive delay     : {current_delay:.1f}s")
     print(f"  Total articles so far    : {progress['total_articles']:,}")
     print(f"  IDs remaining            : {remaining:,}")
-    pct = (progress["last_scanned_id"] - ID_SCAN_START + 1) / \
-          (ID_SCAN_END - ID_SCAN_START + 1) * 100
-    print(f"  Overall progress         : {pct:.1f}%")
     print(f"  Output folder            : {OUTPUT_DIR.resolve()}")
-    print(f"\n  Run the script again to continue.")
-    print(f"{'='*55}\n")
+    print(f"\n  To continue, run:")
+    print(f"\n      python news_extractor.py --instance {_current_instance}")
+    print(f"\n{'='*55}\n")
 
 
 # =====================================================================
@@ -570,6 +600,7 @@ if __name__ == "__main__":
     OUTPUT_DIR    = BASE_OUTPUT_DIR / f"instance_{args.instance}"
     PROGRESS_FILE = OUTPUT_DIR / "progress.json"
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    _current_instance = args.instance
 
     if args.debug:
         debug_selectors(40420446)
