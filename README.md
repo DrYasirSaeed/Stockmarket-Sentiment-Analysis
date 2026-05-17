@@ -26,9 +26,19 @@ Phase 0 — Data Acquisition (news_extractor.py)
 └── Output  : brecorder_YYYY_MM.csv  (article_id, date, headline, body_text, author)
         |
         v
-Phase 1 — Topic Router (topic_router.py)
+Phase 1a — Corpus Exploration (bertopic_explore.py)
+├── Model   : BERTopic with paraphrase-multilingual-MiniLM-L12-v2
+├── Purpose : Unsupervised topic discovery to validate and refine
+│             the keyword categories used in Phase 1b, and to
+│             identify and filter off-topic articles before scoring
+├── Outputs : topic assignments, visualisations, topics-over-time
+└── Artefact: bertopic_model.pkl  (cached; refit with --refit flag)
+        |
+        v
+Phase 1b — Topic Router (topic_router.py)
 ├── Keyword classifier: Monetary | Fiscal | External Finance | Energy
 ├── Headline weighted 3x body text (editorial emphasis signal)
+├── BERTopic exploration used to validate category boundaries
 ├── Validation: precision/recall against 300-article labelled sample
 └── Output  : classified_articles.csv  (+ topic_category, confidence scores)
         |
@@ -61,16 +71,20 @@ Phase 4 — Sectoral Sensitivity Matrix (sectoral_sensitivity_matrix.py)
 ```
 Stockmarket-Sentiment-Analysis/
 │
-├── news_extractor.py               <- Phase 0: BRecorder article scraper
-├── topic_router.py                 <- Phase 1: Keyword topic classifier
-├── finbert_scorer.py               <- Phase 2: FinBERT sentiment scoring
-├── panel_var_estimator.py          <- Phase 3: Panel VAR + Granger causality
-├── sectoral_sensitivity_matrix.py  <- Phase 4: Results synthesis
+├── news_extractor.py               <- Phase 0:  BRecorder article scraper
+├── bertopic_explore.py             <- Phase 1a: BERTopic corpus exploration
+├── topic_router.py                 <- Phase 1b: Keyword topic classifier
+├── finbert_scorer.py               <- Phase 2:  FinBERT sentiment scoring
+├── panel_var_estimator.py          <- Phase 3:  Panel VAR + Granger causality
+├── sectoral_sensitivity_matrix.py  <- Phase 4:  Results synthesis
 │
 ├── requirements.txt                <- All Python dependencies
 ├── LICENSE
 └── README.md
 ```
+
+> **Not tracked in git** (generated/data artefacts):  
+> `Extracted Data/` · `BERTopic Outputs/` · `bertopic_model.pkl` · `embeddings_cache.npy`
 
 ---
 
@@ -97,7 +111,7 @@ Stockmarket-Sentiment-Analysis/
 
 ## Econometric Framework
 
-**Panel VAR** (Holtz-Eakin, Newey & Rosen, 1988) identifies directional transmission  which sentiment categories Granger-cause which sectors, at what lag, and with what persistence. Lag order is selected empirically via AIC minimisation.
+**Panel VAR** (Holtz-Eakin, Newey & Rosen, 1988) identifies directional transmission — which sentiment categories Granger-cause which sectors, at what lag, and with what persistence. Lag order is selected empirically via AIC minimisation.
 
 **Impulse Response Functions (IRFs)** trace the dynamic response of each sector's return to a one-standard-deviation shock in each sentiment category over a 22-trading-day horizon.
 
@@ -112,7 +126,8 @@ Stockmarket-Sentiment-Analysis/
 | Module | File | Status | Note |
 |---|---|---|---|
 | Phase 0 — Data Acquisition | `news_extractor.py` | Running | Parallel ID-scan; resumable; writing to monthly CSVs |
-| Phase 1 — Topic Router | `topic_router.py` | Ready | Keyword classifier; 3x headline weighting |
+| Phase 1a — Corpus Exploration | `bertopic_explore.py` | Ready | BERTopic; embedding cache; all visualisations |
+| Phase 1b — Topic Router | `topic_router.py` | Ready | Keyword classifier; 3x headline weighting |
 | Phase 2 — FinBERT Scoring | `finbert_scorer.py` | Ready | Tested on sample data |
 | Phase 3 — Panel VAR | `panel_var_estimator.py` | Ready | Awaiting completed corpus |
 | Phase 4 — Sensitivity Matrix | `sectoral_sensitivity_matrix.py` | Ready | Awaiting Phase 3 outputs |
@@ -127,18 +142,30 @@ Stockmarket-Sentiment-Analysis/
 pip install -r requirements.txt
 ```
 
-### Phase 0 — Extract articles (run from home/university network) (IN Progress)
+### Phase 0 — Extract articles (run from home/university network)
 
-```python
+```bash
 python news_extractor.py              # resumes automatically from last position
 python news_extractor.py --status     # check progress without scraping
 python news_extractor.py --instance 2 # run second parallel instance
 ```
 
-> Cloudflare blocks datacenter IPs (Colab, AWS, etc.) regardless of library used.
+> Cloudflare blocks datacenter IPs (Colab, AWS, etc.) regardless of library used.  
 > `curl_cffi` impersonates Chrome's TLS fingerprint and works from residential IPs.
 
-### Phase 1 — Classify articles (possible alternative, BERTopic to remove uneccsary topics and to choose the right group) 
+### Phase 1a — Explore corpus with BERTopic
+
+```bash
+python bertopic_explore.py            # fit model and generate all outputs
+python bertopic_explore.py --status   # check which output files exist
+python bertopic_explore.py --refit    # force re-encode + refit from scratch
+```
+
+Embeddings are cached to `embeddings_cache.npy` after the first run — subsequent
+runs skip the encoding step entirely. The fitted model is saved as `bertopic_model.pkl`.
+All visualisations (interactive HTML + static PNG) are written to `BERTopic Outputs/`.
+
+### Phase 1b — Classify articles
 
 ```python
 from topic_router import classify_corpus
@@ -149,9 +176,9 @@ classified = classify_corpus(df)
 classified.to_csv("classified_articles.csv", index=False)
 ```
 
-### Phase 2 — Score sentiment (Key Challenge, Training Finbert for local conetext)
+### Phase 2 — Score sentiment
 
-```python
+```bash
 python finbert_scorer.py
 # Input : classified_articles.csv
 # Output: daily_sentiment.xlsx
@@ -159,7 +186,7 @@ python finbert_scorer.py
 
 ### Phase 3 — Panel VAR
 
-```python
+```bash
 python panel_var_estimator.py
 # Input : panel_data.xlsx  (KSE-100 returns merged with daily_sentiment.xlsx)
 # Output: granger_causality.xlsx, irf_plots.png, fevd_results.xlsx
@@ -167,7 +194,7 @@ python panel_var_estimator.py
 
 ### Phase 4 — Sensitivity Matrix
 
-```python
+```bash
 python sectoral_sensitivity_matrix.py
 # Input : fevd_results.xlsx, granger_causality.xlsx
 # Output: sectoral_sensitivity_matrix.xlsx, sectoral_sensitivity_heatmap.png
