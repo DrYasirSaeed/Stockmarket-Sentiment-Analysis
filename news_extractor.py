@@ -99,8 +99,8 @@ GAP_SKIP    = 200   # IDs to jump forward when gap detected
 
 # --- Retry policy ----------------------------------------------------
 MAX_RETRIES         = 3
-RETRY_BACKOFF_403   = [3, 12, 33]   # seconds per attempt: quick first, escalate if persists
-RETRY_BACKOFF_OTHER = [3, 12, 33]   # same progression for non-403 errors
+RETRY_BACKOFF_403   = [4, 6, 9]    # seconds per attempt: quick first, escalate if persists
+RETRY_BACKOFF_OTHER = [4, 6, 9]    # same progression for non-403 errors
 
 # --- Output ----------------------------------------------------------
 # Base output directory — each instance writes to its own subfolder
@@ -302,10 +302,14 @@ def fetch_article(session, article_id: int) -> dict:
         "date":        "",
         "author":      "",
         "http_status": 0,
+        "retries_used": 0,   # number of retry attempts made (0 = clean first-try)
         "scraped_at":  datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
     for attempt in range(1, MAX_RETRIES + 1):
+        if attempt > 1:
+            result["retries_used"] += 1   # count each retry attempt
+
         try:
             r = session.get(url, timeout=75, allow_redirects=True)
             result["http_status"] = r.status_code
@@ -384,6 +388,11 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     # Strategy 2: adaptive delay — starts at DELAY_HIT_MIN, floats from there
     current_delay = DELAY_HIT_MIN
 
+    # Retry-based fine tuning:
+    #   each retry on any article  → +0.1 s
+    #   every 10 clean first-tries → −0.1 s
+    consecutive_clean = 0   # successes with zero retries in a row
+
     log.info(f"Session: scanning up to {session_size:,} IDs from {resume_from:,}")
     log.info(f"  Adaptive delay start : {current_delay:.1f}s  "
              f"[{ADAPTIVE_DELAY_MIN}–{ADAPTIVE_DELAY_MAX}]")
@@ -403,9 +412,24 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 # ── Strategy 1: reset miss counter on a real article ──
                 consecutive_misses = 0
 
-                # ── Strategy 2: speed up — server is fine, reduce delay ──
+                # ── Strategy 2: adaptive delay (403-based) ──
                 current_delay = max(ADAPTIVE_DELAY_MIN,
                                     current_delay - ADAPTIVE_STEP_DOWN)
+
+                # ── Retry-based fine tuning ──
+                retries = result["retries_used"]
+                if retries > 0:
+                    # needed retries → server under stress, nudge delay up
+                    current_delay = min(ADAPTIVE_DELAY_MAX,
+                                        current_delay + 0.1 * retries)
+                    consecutive_clean = 0
+                else:
+                    # clean first-try success
+                    consecutive_clean += 1
+                    if consecutive_clean >= 10:
+                        current_delay = max(ADAPTIVE_DELAY_MIN,
+                                            current_delay - 0.1)
+                        consecutive_clean = 0
 
                 hits += 1
                 month_key = result["date"][:7] if result["date"] else "unknown"
