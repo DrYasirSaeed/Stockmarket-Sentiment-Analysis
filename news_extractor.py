@@ -99,8 +99,8 @@ GAP_SKIP    = 200   # IDs to jump forward when gap detected
 
 # --- Retry policy ----------------------------------------------------
 MAX_RETRIES         = 3
-RETRY_BACKOFF_403   = [7, 12, 33]   # seconds per attempt: quick first, escalate if persists
-RETRY_BACKOFF_OTHER = [7, 12, 33]   # same progression for non-403 errors
+RETRY_BACKOFF_403   = [3, 12, 33]   # seconds per attempt: quick first, escalate if persists
+RETRY_BACKOFF_OTHER = [3, 12, 33]   # same progression for non-403 errors
 
 # --- Output ----------------------------------------------------------
 # Base output directory — each instance writes to its own subfolder
