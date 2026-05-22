@@ -80,7 +80,7 @@ _current_instance = 1   # updated at runtime; used in restart message
 SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
-DELAY_HIT_MIN  = 1.5   # after a successful article fetch (200)
+DELAY_HIT_MIN  = 0.2   # starting hit delay — adaptive system floats from here
 DELAY_HIT_MAX  = 3.0
 DELAY_MISS_MIN = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
 DELAY_MISS_MAX = 0.3
@@ -88,10 +88,10 @@ DELAY_ERR_MIN  = 8.0   # after a 403 / network error — back off
 DELAY_ERR_MAX  = 15.0
 
 # --- Adaptive delay bounds -------------------------------------------
-ADAPTIVE_DELAY_MIN = 0.8   # floor: never go below this on hits
+ADAPTIVE_DELAY_MIN = 0.2   # floor: start aggressive, stay here if server is happy
 ADAPTIVE_DELAY_MAX = 5.0   # ceiling: never go above this on hits
-ADAPTIVE_STEP_DOWN = 0.1   # reduce delay by this after each clean 200
-ADAPTIVE_STEP_UP   = 0.5   # increase delay by this after each 403
+ADAPTIVE_STEP_DOWN = 0.05  # small step down — already near floor, no need to rush
+ADAPTIVE_STEP_UP   = 0.3   # gradual step up on 403 — climb slowly until stable
 
 # --- Smart gap skipping ----------------------------------------------
 GAP_TRIGGER = 50    # consecutive 404s before skipping
