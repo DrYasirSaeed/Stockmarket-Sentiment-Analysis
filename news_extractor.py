@@ -34,6 +34,7 @@ import logging
 import argparse
 import sys
 import gc
+from collections import deque
 from datetime import datetime, date, timezone
 from pathlib import Path
 
@@ -385,12 +386,18 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     consecutive_misses = 0
 
     # Adaptive hit delay
-    current_delay    = DELAY_HIT_START
+    current_delay     = DELAY_HIT_START
     consecutive_clean = 0   # no-retry successes in a row
+
+    # Rolling 15-minute throughput monitor
+    # Stores timestamps (time.time()) of each saved article.
+    # Older entries are pruned at each checkpoint.
+    RATE_WINDOW  = 15 * 60   # 15 minutes in seconds
+    saved_times  = deque()   # timestamps of saved articles in the window
 
     log.info(f"Session: scanning up to {session_size:,} IDs from {resume_from:,}")
     log.info(f"  Hit delay            : {current_delay}s (adaptive: "
-             f"+{DELAY_STEP_UP}/retry, -{DELAY_STEP_DOWN}/5 clean)")
+             f"+{DELAY_STEP_UP}/retry, -{DELAY_STEP_DOWN}/{CLEAN_STREAK_TRIGGER} clean)")
     log.info(f"  Gap skip trigger     : {GAP_TRIGGER} consecutive 404s "
              f"→ jump +{GAP_SKIP} IDs")
 
@@ -429,6 +436,7 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 session_articles += 1
 
                 append_to_monthly_csv(result)
+                saved_times.append(time.time())   # throughput monitor
 
                 session_pct = ids_attempted / session_size * 100
                 overall_pct = (article_id - ID_SCAN_START + 1) / \
@@ -473,10 +481,16 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 session_pct = ids_attempted / session_size * 100
                 overall_pct = (article_id - ID_SCAN_START + 1) / \
                               (ID_SCAN_END - ID_SCAN_START + 1) * 100
+                # Rolling 15-min throughput: prune old entries, then compute rate
+                cutoff = time.time() - RATE_WINDOW
+                while saved_times and saved_times[0] < cutoff:
+                    saved_times.popleft()
+                rate = len(saved_times) / 15.0   # articles per minute
                 log.info(f"  --- Progress saved  "
                          f"[session {session_pct:.1f}% | overall {overall_pct:.1f}% | "
                          f"{session_articles} articles this session | "
-                         f"total: {progress['total_articles']}] ---")
+                         f"total: {progress['total_articles']} | "
+                         f"{rate:.1f} art/min (15-min avg)] ---")
 
             # Every 500 IDs: clear session cookies and run garbage collection
             # to prevent curl_cffi accumulating session data and growing C: drive
@@ -494,12 +508,18 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
         session_pct = ids_attempted / session_size * 100
         overall_pct = (article_id - ID_SCAN_START + 1) / \
                       (ID_SCAN_END - ID_SCAN_START + 1) * 100
+        # Final throughput reading on Ctrl+C
+        cutoff = time.time() - RATE_WINDOW
+        while saved_times and saved_times[0] < cutoff:
+            saved_times.popleft()
+        rate = len(saved_times) / 15.0
         print(f"\n{'='*55}")
         print(f"  Interrupted at ID     : {article_id:,}")
         print(f"  Session progress      : {session_pct:.1f}%  ({ids_attempted:,} / {session_size:,} IDs)")
         print(f"  Overall progress      : {overall_pct:.1f}%")
         print(f"  Articles this session : {session_articles:,}")
         print(f"  Total articles saved  : {progress['total_articles']:,}")
+        print(f"  Throughput (15-min)   : {rate:.1f} articles/min")
         print(f"\n  Progress saved. To resume, run:")
         print(f"\n      python news_extractor.py --instance {_current_instance}")
         print(f"\n{'='*55}\n")
@@ -507,6 +527,12 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
 
     # Final save
     save_progress(progress)
+
+    # Final throughput reading at session end
+    cutoff = time.time() - RATE_WINDOW
+    while saved_times and saved_times[0] < cutoff:
+        saved_times.popleft()
+    rate = len(saved_times) / 15.0
 
     remaining = ID_SCAN_END - progress["last_scanned_id"]
     session_pct = ids_attempted / session_size * 100
@@ -521,6 +547,7 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     print(f"  Blocked (403)            : {blocked:,}")
     print(f"  Gap skips triggered      : {gaps_skipped:,}")
     print(f"  Final hit delay          : {current_delay:.2f}s")
+    print(f"  Throughput (15-min avg)  : {rate:.1f} articles/min")
     print(f"  Total articles so far    : {progress['total_articles']:,}")
     print(f"  IDs remaining            : {remaining:,}")
     print(f"  Output folder            : {OUTPUT_DIR.resolve()}")
