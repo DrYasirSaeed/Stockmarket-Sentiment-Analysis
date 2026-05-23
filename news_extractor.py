@@ -318,12 +318,9 @@ def fetch_article(session, article_id: int) -> dict:
                 return result
 
             if r.status_code == 403:
-                wait = RETRY_BACKOFF_403[attempt - 1]
-                log.warning(f"  [{article_id}] 403 (attempt {attempt}/{MAX_RETRIES})"
-                            f" — retrying in {wait}s")
-                if attempt < MAX_RETRIES:
-                    time.sleep(wait)
-                    continue
+                # Cloudflare 403 = "I don't trust this request" — retrying
+                # the same URL just looks like a bot. Skip immediately.
+                log.warning(f"  [{article_id}] 403 — skipping (no retry)")
                 return result
 
             if r.status_code != 200:
@@ -392,6 +389,11 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     #   each retry on any article  → +0.1 s
     #   every 10 clean first-tries → −0.1 s
     consecutive_clean = 0   # successes with zero retries in a row
+
+    # 403 deferred retry queue — IDs blocked this checkpoint window.
+    # Retried once every 100 IDs (just before progress save) after a
+    # natural cooldown. Cleared after each retry pass.
+    pending_403 = []
 
     log.info(f"Session: scanning up to {session_size:,} IDs from {resume_from:,}")
     log.info(f"  Adaptive delay start : {current_delay:.1f}s  "
@@ -464,24 +466,45 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
             elif status == 403:
-                # ── Strategy 2: slow down — server is pushing back ──
+                # Cloudflare edge block — queue for retry at next checkpoint
+                # (~100 IDs later) rather than retrying immediately.
                 consecutive_misses = 0
-                current_delay = min(ADAPTIVE_DELAY_MAX,
-                                    current_delay + ADAPTIVE_STEP_UP)
-
                 blocked += 1
-                log.warning(f"  {article_id}  BLOCKED (403) — "
-                            f"backing off {DELAY_ERR_MAX:.0f}s  "
-                            f"[delay raised to {current_delay:.1f}s]")
-                time.sleep(random.uniform(DELAY_ERR_MIN, DELAY_ERR_MAX))
+                pending_403.append(article_id)
+                log.warning(f"  {article_id}  BLOCKED (403) — queued for retry "
+                            f"[{len(pending_403)} pending]")
+                time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
             else:
                 log.warning(f"  {article_id}  HTTP {status}")
                 time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
-            # Save progress every 100 IDs
+            # Every 100 IDs: retry queued 403s then save progress
             progress["last_scanned_id"] = article_id
             if ids_attempted % 100 == 0:
+
+                if pending_403:
+                    log.info(f"  --- Retrying {len(pending_403)} queued 403 article(s) ---")
+                    recovered = 0
+                    for rid in pending_403:
+                        r403 = fetch_article(session, rid)
+                        if r403["http_status"] == 200:
+                            month_key = r403["date"][:7] if r403["date"] else "unknown"
+                            progress["month_counts"][month_key] = (
+                                progress["month_counts"].get(month_key, 0) + 1
+                            )
+                            progress["total_articles"] += 1
+                            session_articles += 1
+                            append_to_monthly_csv(r403)
+                            recovered += 1
+                            log.info(f"    {rid}  RECOVERED  {r403['date']}  "
+                                     f"\"{r403['headline'][:55]}\"")
+                        else:
+                            log.warning(f"    {rid}  still {r403['http_status']} — dropped")
+                        time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
+                    log.info(f"  --- Retry pass done: {recovered}/{len(pending_403)} recovered ---")
+                    pending_403.clear()
+
                 save_progress(progress)
                 session_pct = ids_attempted / session_size * 100
                 overall_pct = (article_id - ID_SCAN_START + 1) / \
@@ -504,6 +527,20 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     except KeyboardInterrupt:
         print(f"\n\n  Ctrl+C detected — saving progress and stopping cleanly...")
         progress["last_scanned_id"] = article_id
+        if pending_403:
+            print(f"  Retrying {len(pending_403)} queued 403(s) before exit...")
+            for rid in pending_403:
+                r403 = fetch_article(session, rid)
+                if r403["http_status"] == 200:
+                    month_key = r403["date"][:7] if r403["date"] else "unknown"
+                    progress["month_counts"][month_key] = (
+                        progress["month_counts"].get(month_key, 0) + 1
+                    )
+                    progress["total_articles"] += 1
+                    session_articles += 1
+                    append_to_monthly_csv(r403)
+                    print(f"    {rid}  RECOVERED")
+                time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
         save_progress(progress)
         session_pct = ids_attempted / session_size * 100
         overall_pct = (article_id - ID_SCAN_START + 1) / \
