@@ -89,7 +89,7 @@ DELAY_MISS_MAX  = 0.3
 # --- Adaptive delay tuning -------------------------------------------
 DELAY_STEP_UP        = 0.1   # increase per retry attempt
 DELAY_STEP_DOWN      = 0.1   # decrease per 5 consecutive clean successes
-CLEAN_STREAK_TRIGGER = 5     # consecutive no-retry successes before stepping down
+CLEAN_STREAK_TRIGGER = 10    # consecutive no-retry successes before stepping down
 
 
 # --- Smart gap skipping ----------------------------------------------
