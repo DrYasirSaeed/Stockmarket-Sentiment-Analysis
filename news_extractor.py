@@ -80,9 +80,17 @@ _current_instance = 1   # updated at runtime; used in restart message
 SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
-DELAY_HIT  = 0.15  # fixed delay after every successful article fetch (200)
+DELAY_HIT      = 0.2   # fixed delay after every successful article fetch (200)
 DELAY_MISS_MIN = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
 DELAY_MISS_MAX = 0.3
+
+# --- IP-block detection ----------------------------------------------
+# If this many consecutive 403s appear across different IDs, the whole
+# IP is blocked (not just individual articles). Sleep IP_BLOCK_SLEEP
+# seconds then resume. pending_403 queue is cleared — no point retrying
+# while the IP is frozen.
+IP_BLOCK_TRIGGER = 5
+IP_BLOCK_SLEEP   = 600   # 10 minutes
 
 # --- Smart gap skipping ----------------------------------------------
 GAP_TRIGGER = 50    # consecutive 404s before skipping
@@ -90,8 +98,8 @@ GAP_SKIP    = 200   # IDs to jump forward when gap detected
 
 # --- Retry policy ----------------------------------------------------
 MAX_RETRIES         = 3
-RETRY_BACKOFF_403   = [4, 6, 9]    # seconds per attempt: quick first, escalate if persists
-RETRY_BACKOFF_OTHER = [4, 6, 9]    # same progression for non-403 errors
+RETRY_BACKOFF_403   = [5, 5, 5]    # seconds per attempt
+RETRY_BACKOFF_OTHER = [5, 5, 5]    # same progression for non-403 errors
 
 # --- Output ----------------------------------------------------------
 # Base output directory — each instance writes to its own subfolder
@@ -378,6 +386,9 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     # natural cooldown. Cleared after each retry pass.
     pending_403 = []
 
+    # IP-block detection — consecutive 403s across different IDs
+    consecutive_403s = 0
+
     log.info(f"Session: scanning up to {session_size:,} IDs from {resume_from:,}")
     log.info(f"  Hit delay            : {DELAY_HIT}s (fixed)")
     log.info(f"  Gap skip trigger     : {GAP_TRIGGER} consecutive 404s "
@@ -395,6 +406,7 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
             if status == 200:
                 # ── Strategy 1: reset miss counter on a real article ──
                 consecutive_misses = 0
+                consecutive_403s = 0
 
                 hits += 1
                 month_key = result["date"][:7] if result["date"] else "unknown"
@@ -418,6 +430,7 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
             elif status == 404:
                 # ── Strategy 1: count misses; skip ahead when gap detected ──
                 consecutive_misses += 1
+                consecutive_403s = 0   # 404s prove the IP is not blocked
                 misses += 1
                 log.debug(f"  {article_id}  404  [streak={consecutive_misses}]")
 
@@ -432,14 +445,30 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
             elif status == 403:
-                # Cloudflare edge block — queue for retry at next checkpoint
-                # (~100 IDs later) rather than retrying immediately.
                 consecutive_misses = 0
+                consecutive_403s += 1
                 blocked += 1
-                pending_403.append(article_id)
-                log.warning(f"  {article_id}  BLOCKED (403) — queued for retry "
-                            f"[{len(pending_403)} pending]")
-                time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
+
+                if consecutive_403s >= IP_BLOCK_TRIGGER:
+                    # IP-level block detected — the whole IP is frozen.
+                    # Clear the retry queue (useless while blocked) and
+                    # sleep until Cloudflare lifts the block.
+                    mins = IP_BLOCK_SLEEP // 60
+                    log.warning(f"  {article_id}  IP BLOCK DETECTED "
+                                f"({consecutive_403s} consecutive 403s) — "
+                                f"sleeping {mins} min then resuming")
+                    pending_403.clear()
+                    consecutive_403s = 0
+                    progress["last_scanned_id"] = article_id
+                    save_progress(progress)
+                    time.sleep(IP_BLOCK_SLEEP)
+                    log.info("  Resuming after IP-block cooldown")
+                else:
+                    # Single article block — queue for deferred retry
+                    pending_403.append(article_id)
+                    log.warning(f"  {article_id}  BLOCKED (403) — queued for retry "
+                                f"[{len(pending_403)} pending]")
+                    time.sleep(random.uniform(DELAY_MISS_MIN, DELAY_MISS_MAX))
 
             else:
                 log.warning(f"  {article_id}  HTTP {status}")
