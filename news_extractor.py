@@ -143,14 +143,14 @@ def load_progress() -> dict:
         "last_scanned_id":  ID_SCAN_START - 1,
         "total_articles":   0,
         "month_counts":     {},   # {"2023-01": 45, "2023-02": 67, ...}
-        "started_at":       datetime.utcnow().isoformat(),
-        "last_updated":     datetime.utcnow().isoformat(),
+        "started_at":       datetime.now(timezone.utc).isoformat(),
+        "last_updated":     datetime.now(timezone.utc).isoformat(),
     }
 
 
 def save_progress(p: dict) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    p["last_updated"] = datetime.utcnow().isoformat()
+    p["last_updated"] = datetime.now(timezone.utc).isoformat()
     with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
         json.dump(p, f, indent=2)
 
