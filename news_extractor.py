@@ -80,9 +80,16 @@ _current_instance = 1   # updated at runtime; used in restart message
 SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
-DELAY_HIT      = 0.2   # fixed delay after every successful article fetch (200)
-DELAY_MISS_MIN = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
-DELAY_MISS_MAX = 0.3
+DELAY_HIT_START = 0.2   # starting hit delay — adjusted at runtime
+DELAY_HIT_MIN   = 0.2   # floor: never go below this
+DELAY_HIT_MAX   = 5.0   # ceiling: never go above this
+DELAY_MISS_MIN  = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
+DELAY_MISS_MAX  = 0.3
+
+# --- Adaptive delay tuning -------------------------------------------
+DELAY_STEP_UP        = 0.1   # increase per retry attempt
+DELAY_STEP_DOWN      = 0.1   # decrease per 5 consecutive clean successes
+CLEAN_STREAK_TRIGGER = 5     # consecutive no-retry successes before stepping down
 
 
 # --- Smart gap skipping ----------------------------------------------
@@ -377,8 +384,13 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     # Strategy 1: gap skipping state
     consecutive_misses = 0
 
+    # Adaptive hit delay
+    current_delay    = DELAY_HIT_START
+    consecutive_clean = 0   # no-retry successes in a row
+
     log.info(f"Session: scanning up to {session_size:,} IDs from {resume_from:,}")
-    log.info(f"  Hit delay            : {DELAY_HIT}s (fixed)")
+    log.info(f"  Hit delay            : {current_delay}s (adaptive: "
+             f"+{DELAY_STEP_UP}/retry, -{DELAY_STEP_DOWN}/5 clean)")
     log.info(f"  Gap skip trigger     : {GAP_TRIGGER} consecutive 404s "
              f"→ jump +{GAP_SKIP} IDs")
 
@@ -395,6 +407,19 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 # ── Strategy 1: reset miss counter on a real article ──
                 consecutive_misses = 0
 
+                # ── Adaptive delay ──
+                retries = result["retries_used"]
+                if retries > 0:
+                    current_delay = min(DELAY_HIT_MAX,
+                                        current_delay + DELAY_STEP_UP * retries)
+                    consecutive_clean = 0
+                else:
+                    consecutive_clean += 1
+                    if consecutive_clean >= CLEAN_STREAK_TRIGGER:
+                        current_delay = max(DELAY_HIT_MIN,
+                                            current_delay - DELAY_STEP_DOWN)
+                        consecutive_clean = 0
+
                 hits += 1
                 month_key = result["date"][:7] if result["date"] else "unknown"
                 progress["month_counts"][month_key] = (
@@ -410,9 +435,10 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                               (ID_SCAN_END - ID_SCAN_START + 1) * 100
                 log.info(f"  {article_id}  SAVED  {result['date']}  "
                          f"\"{result['headline'][:55]}\"  "
-                         f"[session {session_pct:.1f}% | overall {overall_pct:.1f}%]")
+                         f"[session {session_pct:.1f}% | overall {overall_pct:.1f}% | "
+                         f"delay={current_delay:.2f}s]")
 
-                time.sleep(DELAY_HIT)
+                time.sleep(current_delay)
 
             elif status == 404:
                 # ── Strategy 1: count misses; skip ahead when gap detected ──
@@ -494,6 +520,7 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     print(f"  404 (no article)         : {misses:,}")
     print(f"  Blocked (403)            : {blocked:,}")
     print(f"  Gap skips triggered      : {gaps_skipped:,}")
+    print(f"  Final hit delay          : {current_delay:.2f}s")
     print(f"  Total articles so far    : {progress['total_articles']:,}")
     print(f"  IDs remaining            : {remaining:,}")
     print(f"  Output folder            : {OUTPUT_DIR.resolve()}")
