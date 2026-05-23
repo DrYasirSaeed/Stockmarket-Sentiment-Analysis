@@ -80,18 +80,9 @@ _current_instance = 1   # updated at runtime; used in restart message
 SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
-DELAY_HIT_MIN  = 0.2   # starting hit delay — adaptive system floats from here
-DELAY_HIT_MAX  = 3.0
+DELAY_HIT  = 0.15  # fixed delay after every successful article fetch (200)
 DELAY_MISS_MIN = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
 DELAY_MISS_MAX = 0.3
-DELAY_ERR_MIN  = 8.0   # after a 403 / network error — back off
-DELAY_ERR_MAX  = 15.0
-
-# --- Adaptive delay bounds -------------------------------------------
-ADAPTIVE_DELAY_MIN = 0.2   # floor: start aggressive, stay here if server is happy
-ADAPTIVE_DELAY_MAX = 5.0   # ceiling: never go above this on hits
-ADAPTIVE_STEP_DOWN = 0.05  # small step down — already near floor, no need to rush
-ADAPTIVE_STEP_UP   = 0.3   # gradual step up on 403 — climb slowly until stable
 
 # --- Smart gap skipping ----------------------------------------------
 GAP_TRIGGER = 50    # consecutive 404s before skipping
@@ -382,22 +373,13 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     # Strategy 1: gap skipping state
     consecutive_misses = 0
 
-    # Strategy 2: adaptive delay — starts at DELAY_HIT_MIN, floats from there
-    current_delay = DELAY_HIT_MIN
-
-    # Retry-based fine tuning:
-    #   each retry on any article  → +0.1 s
-    #   every 10 clean first-tries → −0.1 s
-    consecutive_clean = 0   # successes with zero retries in a row
-
     # 403 deferred retry queue — IDs blocked this checkpoint window.
     # Retried once every 100 IDs (just before progress save) after a
     # natural cooldown. Cleared after each retry pass.
     pending_403 = []
 
     log.info(f"Session: scanning up to {session_size:,} IDs from {resume_from:,}")
-    log.info(f"  Adaptive delay start : {current_delay:.1f}s  "
-             f"[{ADAPTIVE_DELAY_MIN}–{ADAPTIVE_DELAY_MAX}]")
+    log.info(f"  Hit delay            : {DELAY_HIT}s (fixed)")
     log.info(f"  Gap skip trigger     : {GAP_TRIGGER} consecutive 404s "
              f"→ jump +{GAP_SKIP} IDs")
 
@@ -414,21 +396,6 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 # ── Strategy 1: reset miss counter on a real article ──
                 consecutive_misses = 0
 
-                # ── Retry-based fine tuning ──
-                retries = result["retries_used"]
-                if retries > 0:
-                    # needed retries → server under stress, nudge delay up
-                    current_delay = min(ADAPTIVE_DELAY_MAX,
-                                        current_delay + 0.1 * retries)
-                    consecutive_clean = 0
-                else:
-                    # clean first-try success
-                    consecutive_clean += 1
-                    if consecutive_clean >= 10:
-                        current_delay = max(ADAPTIVE_DELAY_MIN,
-                                            current_delay - 0.1)
-                        consecutive_clean = 0
-
                 hits += 1
                 month_key = result["date"][:7] if result["date"] else "unknown"
                 progress["month_counts"][month_key] = (
@@ -444,10 +411,9 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                               (ID_SCAN_END - ID_SCAN_START + 1) * 100
                 log.info(f"  {article_id}  SAVED  {result['date']}  "
                          f"\"{result['headline'][:55]}\"  "
-                         f"[session {session_pct:.1f}% | overall {overall_pct:.1f}% | "
-                         f"delay={current_delay:.1f}s]")
+                         f"[session {session_pct:.1f}% | overall {overall_pct:.1f}%]")
 
-                time.sleep(random.uniform(current_delay, current_delay + 1.0))
+                time.sleep(DELAY_HIT)
 
             elif status == 404:
                 # ── Strategy 1: count misses; skip ahead when gap detected ──
@@ -512,8 +478,7 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 log.info(f"  --- Progress saved  "
                          f"[session {session_pct:.1f}% | overall {overall_pct:.1f}% | "
                          f"{session_articles} articles this session | "
-                         f"total: {progress['total_articles']} | "
-                         f"delay: {current_delay:.1f}s] ---")
+                         f"total: {progress['total_articles']}] ---")
 
             # Every 500 IDs: clear session cookies and run garbage collection
             # to prevent curl_cffi accumulating session data and growing C: drive
@@ -571,7 +536,6 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
     print(f"  404 (no article)         : {misses:,}")
     print(f"  Blocked (403)            : {blocked:,}")
     print(f"  Gap skips triggered      : {gaps_skipped:,}")
-    print(f"  Final adaptive delay     : {current_delay:.1f}s")
     print(f"  Total articles so far    : {progress['total_articles']:,}")
     print(f"  IDs remaining            : {remaining:,}")
     print(f"  Output folder            : {OUTPUT_DIR.resolve()}")
