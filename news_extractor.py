@@ -412,10 +412,6 @@ def run_session(session_size: int = SESSION_SIZE) -> None:
                 # ── Strategy 1: reset miss counter on a real article ──
                 consecutive_misses = 0
 
-                # ── Strategy 2: adaptive delay (403-based) ──
-                current_delay = max(ADAPTIVE_DELAY_MIN,
-                                    current_delay - ADAPTIVE_STEP_DOWN)
-
                 # ── Retry-based fine tuning ──
                 retries = result["retries_used"]
                 if retries > 0:
