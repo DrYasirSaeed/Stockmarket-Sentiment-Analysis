@@ -83,14 +83,14 @@ SESSION_SIZE = 10_000
 # --- Delays (seconds) ------------------------------------------------
 DELAY_HIT_START = 1.5   # starting hit delay — adjusted at runtime
 DELAY_HIT_MIN   = 0.2   # floor: never go below this
-DELAY_HIT_MAX   = 1.5   # ceiling: never go above this
+DELAY_HIT_MAX   = 5.0   # ceiling: never go above this
 DELAY_MISS_MIN  = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
 DELAY_MISS_MAX  = 0.3
 
 # --- Adaptive delay tuning -------------------------------------------
 DELAY_STEP_UP        = 0.1   # increase per retry attempt
 DELAY_STEP_DOWN      = 0.1   # decrease per 5 consecutive clean successes
-CLEAN_STREAK_TRIGGER = 10    # consecutive no-retry successes before stepping down
+CLEAN_STREAK_TRIGGER = 15    # consecutive no-retry successes before stepping down
 
 
 # --- Smart gap skipping ----------------------------------------------
