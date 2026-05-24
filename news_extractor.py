@@ -98,9 +98,9 @@ GAP_TRIGGER = 50    # consecutive 404s before skipping
 GAP_SKIP    = 200   # IDs to jump forward when gap detected
 
 # --- Retry policy ----------------------------------------------------
-MAX_RETRIES         = 3
-RETRY_BACKOFF_403   = [5, 5, 5]    # seconds per attempt
-RETRY_BACKOFF_OTHER = [5, 5, 5]    # same progression for non-403 errors
+MAX_RETRIES         = 10
+RETRY_BACKOFF_403   = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]    # seconds per attempt
+RETRY_BACKOFF_OTHER = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]    # same progression for non-403 errors
 
 # --- Output ----------------------------------------------------------
 # Base output directory — each instance writes to its own subfolder
@@ -649,7 +649,8 @@ if __name__ == "__main__":
         print(f"  Output     : {OUTPUT_DIR.resolve()}")
         print("=" * 55)
 
-        session_size = args.session_size
-        print(f"  Session    : {session_size:,} IDs (~"
-              f"{session_size/2500:.1f}–{session_size/1500:.1f} hours)\n")
+        # Run all remaining IDs to completion
+        p = load_progress()
+        session_size = ID_SCAN_END - p["last_scanned_id"]
+        print(f"  Session    : {session_size:,} remaining IDs (running to completion)\n")
         run_session(session_size=session_size)
