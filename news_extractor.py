@@ -82,7 +82,7 @@ SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
 DELAY_HIT_START = 3.0   # starting hit delay — adjusted at runtime
-DELAY_HIT_MIN   = 0.2   # floor: never go below this
+DELAY_HIT_MIN   = 1.0   # floor: never go below this
 DELAY_HIT_MAX   = 5.0   # ceiling: never go above this
 DELAY_MISS_MIN  = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
 DELAY_MISS_MAX  = 0.3
