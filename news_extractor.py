@@ -67,11 +67,11 @@ log = logging.getLogger(__name__)
 # Run each in a separate PowerShell window simultaneously.
 INSTANCE_RANGES = {
     1: (40_000_000, 40_300_000),
-    2: (40_300_001, 40_600_000),
+    2: (40_300_001, 40_422_619),
 }
 # Defaults (overridden at runtime by --instance flag)
 ID_SCAN_START     = 40_000_000
-ID_SCAN_END       = 40_600_000
+ID_SCAN_END       = 40_422_619
 _current_instance = 1   # updated at runtime; used in restart message
 
 # --- Session size ----------------------------------------------------
