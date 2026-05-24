@@ -81,9 +81,9 @@ _current_instance = 1   # updated at runtime; used in restart message
 SESSION_SIZE = 10_000
 
 # --- Delays (seconds) ------------------------------------------------
-DELAY_HIT_START = 1.0   # starting hit delay — adjusted at runtime
+DELAY_HIT_START = 1.5   # starting hit delay — adjusted at runtime
 DELAY_HIT_MIN   = 0.2   # floor: never go below this
-DELAY_HIT_MAX   = 1.0   # ceiling: never go above this
+DELAY_HIT_MAX   = 1.5   # ceiling: never go above this
 DELAY_MISS_MIN  = 0.1   # after a 404 — fast, Cloudflare resolves these at edge
 DELAY_MISS_MAX  = 0.3
 
@@ -649,17 +649,7 @@ if __name__ == "__main__":
         print(f"  Output     : {OUTPUT_DIR.resolve()}")
         print("=" * 55)
 
-        # Ask user for session size interactively
-        try:
-            raw = input(f"\n  How many IDs to scan this session? "
-                        f"[default: {SESSION_SIZE:,}]: ").strip()
-            session_size = int(raw) if raw else args.session_size
-            if session_size <= 0:
-                raise ValueError
-        except ValueError:
-            print(f"  Invalid input — using default: {SESSION_SIZE:,}")
-            session_size = args.session_size
-
+        session_size = args.session_size
         print(f"  Session    : {session_size:,} IDs (~"
               f"{session_size/2500:.1f}–{session_size/1500:.1f} hours)\n")
         run_session(session_size=session_size)
