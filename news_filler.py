@@ -68,16 +68,10 @@ INSTANCE_DIRS   = {
 FILLER_DIR    = BASE_OUTPUT_DIR / "filler"
 PROGRESS_FILE = FILLER_DIR / "filler_progress.json"
 
-# Delays — same adaptive logic as news_extractor
-DELAY_HIT_START = 1.5
-DELAY_HIT_MIN   = 0.2
-DELAY_HIT_MAX   = 5.0
+# Delays — fixed, no adaptive logic
+DELAY_HIT  = 2.3   # fixed delay after every successful article
 DELAY_MISS_MIN  = 0.1
 DELAY_MISS_MAX  = 0.3
-
-DELAY_STEP_UP        = 0.1
-DELAY_STEP_DOWN      = 0.1
-CLEAN_STREAK_TRIGGER = 15
 
 MAX_RETRIES         = 2
 RETRY_BACKOFF_403   = [2, 2]
@@ -378,17 +372,13 @@ def run_filler(downloaded_ids: set) -> None:
     misses        = 0   # 404s
     blocked       = 0   # 403s (after all retries)
 
-    current_delay     = DELAY_HIT_START
-    consecutive_clean = 0
-
     # Rolling 15-min throughput monitor
     RATE_WINDOW = 15 * 60
     saved_times = deque()
 
     remaining = ID_SCAN_END - resume_from + 1
     log.info(f"Gap fill: {remaining:,} IDs to scan from {resume_from:,}")
-    log.info(f"  Hit delay          : {current_delay}s (adaptive: "
-             f"+{DELAY_STEP_UP}/retry, -{DELAY_STEP_DOWN}/{CLEAN_STREAK_TRIGGER} clean)")
+    log.info(f"  Hit delay          : {DELAY_HIT}s (fixed)")
 
     article_id = resume_from
 
@@ -401,18 +391,6 @@ def run_filler(downloaded_ids: set) -> None:
             status = result["http_status"]
 
             if status == 200:
-                retries = result["retries_used"]
-                if retries > 0:
-                    current_delay = min(DELAY_HIT_MAX,
-                                        current_delay + DELAY_STEP_UP * retries)
-                    consecutive_clean = 0
-                else:
-                    consecutive_clean += 1
-                    if consecutive_clean >= CLEAN_STREAK_TRIGGER:
-                        current_delay = max(DELAY_HIT_MIN,
-                                            current_delay - DELAY_STEP_DOWN)
-                        consecutive_clean = 0
-
                 recovered += 1
                 progress["total_recovered"] += 1
                 month_key = result["date"][:7] if result["date"] else "unknown"
@@ -426,8 +404,8 @@ def run_filler(downloaded_ids: set) -> None:
                               (ID_SCAN_END - ID_SCAN_START + 1) * 100
                 log.info(f"  {article_id}  RECOVERED  {result['date']}  "
                          f"\"{result['headline'][:55]}\"  "
-                         f"[overall {overall_pct:.1f}% | delay={current_delay:.2f}s]")
-                time.sleep(current_delay)
+                         f"[overall {overall_pct:.1f}%]")
+                time.sleep(DELAY_HIT)
 
             elif status == 404:
                 misses += 1
