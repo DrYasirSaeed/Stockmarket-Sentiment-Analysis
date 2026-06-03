@@ -79,9 +79,9 @@ DELAY_STEP_UP        = 0.1
 DELAY_STEP_DOWN      = 0.1
 CLEAN_STREAK_TRIGGER = 15
 
-MAX_RETRIES         = 10
-RETRY_BACKOFF_403   = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-RETRY_BACKOFF_OTHER = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+MAX_RETRIES         = 2
+RETRY_BACKOFF_403   = [2, 2]
+RETRY_BACKOFF_OTHER = [2, 2]
 
 BASE    = "https://www.brecorder.com"
 ART_URL = BASE + "/news/{article_id}"
@@ -366,7 +366,6 @@ def run_filler(downloaded_ids: set) -> None:
     session = make_session()
 
     ids_fetched   = 0   # IDs where an HTTP request was made
-    ids_skipped   = 0   # IDs already downloaded (skipped instantly)
     recovered     = 0   # new articles found and saved
     misses        = 0   # 404s
     blocked       = 0   # 403s (after all retries)
@@ -380,7 +379,6 @@ def run_filler(downloaded_ids: set) -> None:
 
     remaining = ID_SCAN_END - resume_from + 1
     log.info(f"Gap fill: {remaining:,} IDs to scan from {resume_from:,}")
-    log.info(f"  Already downloaded : {len(downloaded_ids):,} IDs (skipped instantly)")
     log.info(f"  Hit delay          : {current_delay}s (adaptive: "
              f"+{DELAY_STEP_UP}/retry, -{DELAY_STEP_DOWN}/{CLEAN_STREAK_TRIGGER} clean)")
 
@@ -389,20 +387,7 @@ def run_filler(downloaded_ids: set) -> None:
     try:
         while article_id <= ID_SCAN_END:
 
-            # ── Skip already-downloaded IDs instantly ──
-            if article_id in downloaded_ids:
-                ids_skipped += 1
-                progress["last_scanned_id"] = article_id
-                article_id += 1
-                if ids_skipped % 10_000 == 0:
-                    save_progress(progress)
-                    pct = (article_id - ID_SCAN_START) / (ID_SCAN_END - ID_SCAN_START) * 100
-                    log.info(f"  Fast-forwarding through known IDs... "
-                             f"{pct:.1f}% of range passed  "
-                             f"({ids_skipped:,} skipped so far)")
-                continue
-
-            # ── Fetch unknown ID ──
+            # ── Fetch every ID — no skipping ──
             ids_fetched += 1
             result = fetch_article(session, article_id)
             status = result["http_status"]
@@ -428,7 +413,6 @@ def run_filler(downloaded_ids: set) -> None:
                 )
                 append_to_monthly_csv(result)
                 saved_times.append(time.time())
-                downloaded_ids.add(article_id)   # prevent re-fetch on resume
 
                 overall_pct = (article_id - ID_SCAN_START + 1) / \
                               (ID_SCAN_END - ID_SCAN_START + 1) * 100
@@ -483,7 +467,6 @@ def run_filler(downloaded_ids: set) -> None:
         print(f"\n{'='*55}")
         print(f"  Interrupted at ID       : {article_id:,}")
         print(f"  IDs fetched             : {ids_fetched:,}")
-        print(f"  IDs skipped (known)     : {ids_skipped:,}")
         print(f"  Articles recovered      : {recovered:,}")
         print(f"  404 (no article)        : {misses:,}")
         print(f"  Blocked (403)           : {blocked:,}")
@@ -503,7 +486,6 @@ def run_filler(downloaded_ids: set) -> None:
     print(f"\n{'='*55}")
     print(f"  Gap fill complete!")
     print(f"  IDs fetched             : {ids_fetched:,}")
-    print(f"  IDs skipped (known)     : {ids_skipped:,}")
     print(f"  Articles recovered      : {recovered:,}")
     print(f"  404 (no article)        : {misses:,}")
     print(f"  Blocked (403)           : {blocked:,}")
