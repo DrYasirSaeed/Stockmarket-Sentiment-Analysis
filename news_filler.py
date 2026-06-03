@@ -199,17 +199,25 @@ def save_progress(p: dict) -> None:
 # Monthly CSV Management
 # =====================================================================
 
-def monthly_csv_path(date_str: str) -> Path:
+def instance_dir_for(article_id: int) -> Path:
+    """Route the article to the correct instance folder by ID range."""
+    if article_id <= 40_300_000:
+        return INSTANCE_DIRS[1]
+    return INSTANCE_DIRS[2]
+
+
+def monthly_csv_path(article_id: int, date_str: str) -> Path:
+    folder = instance_dir_for(article_id)
     try:
         d = date.fromisoformat(date_str[:10])
-        return FILLER_DIR / f"brecorder_{d.year}_{d.month:02d}.csv"
+        return folder / f"brecorder_{d.year}_{d.month:02d}.csv"
     except (ValueError, TypeError):
-        return FILLER_DIR / "brecorder_unknown.csv"
+        return folder / "brecorder_unknown.csv"
 
 
 def append_to_monthly_csv(record: dict) -> None:
-    path = monthly_csv_path(record.get("date", ""))
-    FILLER_DIR.mkdir(parents=True, exist_ok=True)
+    path = monthly_csv_path(record["article_id"], record.get("date", ""))
+    path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = path.exists()
     pd.DataFrame([record]).to_csv(
         path, mode="a", header=not file_exists,
@@ -490,7 +498,8 @@ def run_filler(downloaded_ids: set) -> None:
     print(f"  404 (no article)        : {misses:,}")
     print(f"  Blocked (403)           : {blocked:,}")
     print(f"  Throughput (15-min avg) : {rate:.1f} articles/min")
-    print(f"  Output folder           : {FILLER_DIR.resolve()}")
+    print(f"  Written to instance_1   : {INSTANCE_DIRS[1].resolve()}")
+    print(f"  Written to instance_2   : {INSTANCE_DIRS[2].resolve()}")
     print(f"\n{'='*55}\n")
 
 
