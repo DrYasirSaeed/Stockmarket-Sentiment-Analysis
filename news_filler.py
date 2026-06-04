@@ -351,24 +351,27 @@ def fetch_article(session, article_id: int) -> dict:
 # Main Gap Filler Runner
 # =====================================================================
 
-def run_filler(downloaded_ids: set) -> None:
+def run_filler(missing_ids: list) -> None:
     """
-    Iterate the full ID range. Skip IDs already downloaded (no HTTP
-    request). Fetch every other ID and save any articles found.
-    Can be interrupted and resumed — progress is tracked in filler_progress.json.
+    Fetch only the pre-computed list of missing IDs.
+    No full-range scan — every ID here is genuinely undownloaded.
+    Resumable: skips IDs already processed in a previous interrupted run.
     """
     FILLER_DIR.mkdir(parents=True, exist_ok=True)
     progress    = load_progress()
     resume_from = progress["last_scanned_id"] + 1
 
-    if resume_from > ID_SCAN_END:
-        log.info("Gap fill already complete — all IDs have been checked.")
+    # Filter the missing list to only IDs not yet processed this run
+    todo = [i for i in missing_ids if i >= resume_from]
+
+    if not todo:
+        log.info("Gap fill already complete — all missing IDs have been checked.")
         return
 
     session = make_session()
 
-    ids_fetched   = 0   # IDs where an HTTP request was made
-    recovered     = 0   # new articles found and saved
+    ids_fetched   = 0   # HTTP requests made
+    recovered     = 0   # new articles saved
     misses        = 0   # 404s
     blocked       = 0   # 403s (after all retries)
 
@@ -376,16 +379,11 @@ def run_filler(downloaded_ids: set) -> None:
     RATE_WINDOW = 15 * 60
     saved_times = deque()
 
-    remaining = ID_SCAN_END - resume_from + 1
-    log.info(f"Gap fill: {remaining:,} IDs to scan from {resume_from:,}")
-    log.info(f"  Hit delay          : {DELAY_HIT}s (fixed)")
-
-    article_id = resume_from
+    log.info(f"Gap fill: {len(todo):,} missing IDs to fetch")
+    log.info(f"  Hit delay : {DELAY_HIT}s (fixed)")
 
     try:
-        while article_id <= ID_SCAN_END:
-
-            # ── Fetch every ID — no skipping ──
+        for article_id in todo:
             ids_fetched += 1
             result = fetch_article(session, article_id)
             status = result["http_status"]
@@ -400,11 +398,10 @@ def run_filler(downloaded_ids: set) -> None:
                 append_to_monthly_csv(result)
                 saved_times.append(time.time())
 
-                overall_pct = (article_id - ID_SCAN_START + 1) / \
-                              (ID_SCAN_END - ID_SCAN_START + 1) * 100
+                pct = ids_fetched / len(todo) * 100
                 log.info(f"  {article_id}  RECOVERED  {result['date']}  "
                          f"\"{result['headline'][:55]}\"  "
-                         f"[overall {overall_pct:.1f}%]")
+                         f"[{pct:.1f}% of gaps checked]")
                 time.sleep(DELAY_HIT)
 
             elif status == 404:
@@ -423,24 +420,20 @@ def run_filler(downloaded_ids: set) -> None:
 
             progress["last_scanned_id"] = article_id
 
-            # Save progress + throughput log every 100 fetched IDs
             if ids_fetched % 100 == 0:
                 save_progress(progress)
                 cutoff = time.time() - RATE_WINDOW
                 while saved_times and saved_times[0] < cutoff:
                     saved_times.popleft()
                 rate = len(saved_times) / 15.0
-                overall_pct = (article_id - ID_SCAN_START + 1) / \
-                              (ID_SCAN_END - ID_SCAN_START + 1) * 100
+                pct  = ids_fetched / len(todo) * 100
                 log.info(f"  --- Progress saved  "
-                         f"[overall {overall_pct:.1f}% | fetched {ids_fetched:,} | "
+                         f"[{pct:.1f}% of gaps | fetched {ids_fetched:,} | "
                          f"recovered {recovered} | {rate:.1f} art/min (15-min avg)] ---")
 
             if ids_fetched % 500 == 0:
                 session.cookies.clear()
                 gc.collect()
-
-            article_id += 1
 
     except KeyboardInterrupt:
         progress["last_scanned_id"] = article_id
@@ -452,7 +445,7 @@ def run_filler(downloaded_ids: set) -> None:
         print(f"\n\n  Ctrl+C detected — saving progress and stopping cleanly...")
         print(f"\n{'='*55}")
         print(f"  Interrupted at ID       : {article_id:,}")
-        print(f"  IDs fetched             : {ids_fetched:,}")
+        print(f"  IDs fetched             : {ids_fetched:,} / {len(todo):,}")
         print(f"  Articles recovered      : {recovered:,}")
         print(f"  404 (no article)        : {misses:,}")
         print(f"  Blocked (403)           : {blocked:,}")
@@ -516,4 +509,4 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(f"  Starting gap fill for {len(missing_ids):,} unchecked IDs...\n")
-    run_filler(downloaded_ids)
+    run_filler(missing_ids)
