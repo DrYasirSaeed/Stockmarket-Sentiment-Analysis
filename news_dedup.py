@@ -39,11 +39,14 @@ BACKUP_DIR = BASE_OUTPUT_DIR / "dedup_backup"
 
 def dedup_file(csv_path: Path, dry_run: bool) -> tuple[int, int]:
     """
-    Load csv_path, drop duplicate article_ids, write back.
-    Returns (original_count, duplicates_removed).
+    Load csv_path in chunks (handles bloated files), drop duplicate
+    article_ids, write back. Returns (original_count, duplicates_removed).
     """
     try:
-        df = pd.read_csv(csv_path, dtype={"article_id": int})
+        chunks = pd.read_csv(
+            csv_path, dtype={"article_id": int}, chunksize=50_000
+        )
+        df = pd.concat(chunks, ignore_index=True)
     except Exception as e:
         log.error(f"  Could not read {csv_path.name}: {e}")
         return 0, 0
