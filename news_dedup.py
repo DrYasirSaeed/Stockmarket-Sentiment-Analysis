@@ -15,12 +15,16 @@ Usage:
 """
 
 import sys
+import csv
 import shutil
 import argparse
 import logging
 from pathlib import Path
 
 import pandas as pd
+
+# Some article body fields exceed Python's default CSV field size limit
+csv.field_size_limit(sys.maxsize)
 
 logging.basicConfig(
     level=logging.INFO,
