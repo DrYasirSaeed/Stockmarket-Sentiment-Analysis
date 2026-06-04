@@ -486,6 +486,10 @@ if __name__ == "__main__":
         "--status", action="store_true",
         help="Show gap analysis report without fetching"
     )
+    parser.add_argument(
+        "--export", action="store_true",
+        help="Save missing IDs to missing_ids.txt then exit (no fetching)"
+    )
     args = parser.parse_args()
 
     print("=" * 55)
@@ -502,6 +506,16 @@ if __name__ == "__main__":
     print_gap_report(downloaded_ids, missing_ids)
 
     if args.status:
+        sys.exit(0)
+
+    if args.export:
+        if not missing_ids:
+            print("  No missing IDs — extraction is complete!")
+        else:
+            export_path = BASE_OUTPUT_DIR / "missing_ids.txt"
+            export_path.write_text("\n".join(str(i) for i in missing_ids), encoding="utf-8")
+            print(f"  {len(missing_ids):,} missing IDs saved to:")
+            print(f"  {export_path.resolve()}")
         sys.exit(0)
 
     if not missing_ids:
