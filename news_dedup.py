@@ -44,7 +44,8 @@ def dedup_file(csv_path: Path, dry_run: bool) -> tuple[int, int]:
     """
     try:
         chunks = pd.read_csv(
-            csv_path, dtype={"article_id": int}, chunksize=50_000
+            csv_path, dtype={"article_id": int}, chunksize=50_000,
+            engine="python", on_bad_lines="skip"
         )
         df = pd.concat(chunks, ignore_index=True)
     except Exception as e:
