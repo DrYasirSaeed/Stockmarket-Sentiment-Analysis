@@ -192,6 +192,15 @@ def main():
         status_check()
         sys.exit(0)
 
+    # ── Prevent joblib/tokenizer worker crashes ──────────────────────────────
+    # KeyBERTInspired spawns parallel workers via joblib loky backend.
+    # On Colab these workers crash silently (no traceback) leaving leaked
+    # semaphores. Forcing single-threaded execution prevents this.
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["LOKY_MAX_CPU_COUNT"]     = "1"
+    os.environ["OMP_NUM_THREADS"]        = "1"
+    os.environ["MKL_NUM_THREADS"]        = "1"
+
     # ── Heavy imports ────────────────────────────────────────────────────────
     import glob
     import pickle
@@ -372,12 +381,20 @@ def main():
             stop_words   = "english",
         )
 
+        # KeyBERTInspired can crash silently on Colab due to worker parallelism.
+        # Fall back to plain c-TF-IDF representation if it fails to initialise.
+        try:
+            representation_model = KeyBERTInspired(top_n_words=10)
+        except Exception as e:
+            print(f"  WARNING: KeyBERTInspired failed ({e}) — using default c-TF-IDF representation.")
+            representation_model = None
+
         topic_model = BERTopic(
             embedding_model         = CONFIG["embedding_model"],
             umap_model              = CachedUMAP(umap_embeddings),  # skips UMAP step
             hdbscan_model           = hdbscan_model,
             vectorizer_model        = vectorizer_model,
-            representation_model    = KeyBERTInspired(),
+            representation_model    = representation_model,
             nr_topics               = CONFIG["nr_topics"],
             calculate_probabilities = False,   # True needs ~7 GB RAM — not feasible
             verbose                 = True,
