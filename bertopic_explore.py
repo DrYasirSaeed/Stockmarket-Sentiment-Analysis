@@ -84,8 +84,9 @@ CONFIG = {
     "hdbscan_min_samples":  10,
     "hdbscan_method":       "eom",
 
-    "ngram_range":          (1, 2),
-    "min_df":               5,
+    "ngram_range":          (1, 1),    # unigrams only — bigrams OOM on 413K docs at 12GB RAM
+    "min_df":               10,        # raised from 5 — cuts rare terms, reduces matrix size
+    "max_features":         50000,     # hard cap on vocabulary to prevent sparse matrix OOM
     "nr_topics":            "auto",
 
     # ── Misc ─────────────────────────────────────────────────────────────────
@@ -365,9 +366,10 @@ def main():
         )
 
         vectorizer_model = CountVectorizer(
-            ngram_range = CONFIG["ngram_range"],
-            min_df      = CONFIG["min_df"],
-            stop_words  = "english",
+            ngram_range  = CONFIG["ngram_range"],
+            min_df       = CONFIG["min_df"],
+            max_features = CONFIG.get("max_features"),   # None = no cap (safe default)
+            stop_words   = "english",
         )
 
         topic_model = BERTopic(
