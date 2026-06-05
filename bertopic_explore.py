@@ -2,15 +2,26 @@
 BERTopic exploration script for Business Recorder financial news corpus.
 
 Flags:
-  --refit   Force re-encode embeddings and refit model (deletes .npy cache too).
+  --refit   Force re-encode embeddings and refit model (deletes all caches).
   --status  Print which output files exist, then exit.
 
 Speed notes
 -----------
-Embeddings are the most expensive step (~minutes on CPU, ~seconds on GPU).
-They are cached to CONFIG["embedding_cache"] after the first run so every
-subsequent run skips encoding entirely and jumps straight to fitting/outputs.
-Pass --refit to force a fresh encode + refit.
+Two expensive steps are cached to disk so they only run once:
+
+  embeddings_cache.npy  — sentence-transformer output (~minutes on CPU)
+  umap_cache.npy        — UMAP-reduced embeddings  (~hours on CPU, 227K docs)
+
+On subsequent runs the script loads both caches and jumps straight to
+HDBSCAN clustering and output generation.
+Pass --refit to delete all caches and start from scratch.
+
+Memory note
+-----------
+calculate_probabilities=True allocates a (n_docs × n_topics) float64 matrix
+that can exceed 7 GB on large corpora. It is set to False here.
+Per-article distributions are still available via approximate_distribution()
+which is used for the 10-article terminal sample.
 """
 
 # ---------------------------------------------------------------------------
@@ -18,17 +29,31 @@ Pass --refit to force a fresh encode + refit.
 # ---------------------------------------------------------------------------
 import os
 
+import sys as _sys
+
+# ---------------------------------------------------------------------------
+# Environment detection — same script runs locally and on Colab
+# ---------------------------------------------------------------------------
+_ON_COLAB = "google.colab" in _sys.modules or "/content/" in __file__
+
+if _ON_COLAB:
+    _BASE = "/content/drive/MyDrive/Github-Cursor/Stockmarket-Sentiment-Analysis"
+else:
+    _BASE = r"D:\Stockmarket-Sentiment-Analysis"
+
 CONFIG = {
     # ── Input ────────────────────────────────────────────────────────────────
-    "data_dir":         r"D:\Stockmarket-Sentiment-Analysis\Extracted Data",
+    "data_dir":         _BASE + ("/Extracted Data" if _ON_COLAB else r"\Extracted Data"),
 
     # ── Saved artefacts ──────────────────────────────────────────────────────
-    "model_path":       r"D:\Stockmarket-Sentiment-Analysis\bertopic_model.pkl",
-    # Embedding matrix cached here; deleted + recomputed only on --refit
-    "embedding_cache":  r"D:\Stockmarket-Sentiment-Analysis\embeddings_cache.npy",
+    "model_path":       _BASE + ("/bertopic_model.pkl" if _ON_COLAB else r"\bertopic_model.pkl"),
+    # Sentence-transformer output — recomputed only on --refit or corpus change
+    "embedding_cache":  _BASE + ("/embeddings_cache.npy" if _ON_COLAB else r"\embeddings_cache.npy"),
+    # UMAP-reduced embeddings — recomputed only on --refit or corpus change
+    "umap_cache":       _BASE + ("/umap_cache.npy" if _ON_COLAB else r"\umap_cache.npy"),
 
     # ── Output directory ─────────────────────────────────────────────────────
-    "out_dir":          r"D:\Stockmarket-Sentiment-Analysis\BERTopic Outputs",
+    "out_dir":          _BASE + ("/BERTopic Outputs" if _ON_COLAB else r"\BERTopic Outputs"),
 
     # ── Output filenames (all placed inside out_dir) ──────────────────────
     "topics_xlsx":      "bertopic_topics.xlsx",
@@ -46,8 +71,8 @@ CONFIG = {
 
     # ── Embedding ─────────────────────────────────────────────────────────────
     "embedding_model":  "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-    "embed_batch_size": 64,        # increase if you have a GPU with ample VRAM
-    # "embed_device": "cuda",      # uncomment to force GPU; auto-detected below
+    "embed_batch_size": 128 if _ON_COLAB else 64,   # GPU batch on Colab, CPU batch locally
+    "embed_device":     "cuda" if _ON_COLAB else None,  # auto-detected locally
 
     # ── BERTopic / UMAP / HDBSCAN ────────────────────────────────────────────
     "umap_n_neighbors": 15,
@@ -91,7 +116,7 @@ import sys
 def parse_args():
     p = argparse.ArgumentParser(description="BERTopic explorer for BR corpus")
     p.add_argument("--refit",  action="store_true",
-                   help="Delete embedding cache + saved model and refit from scratch")
+                   help="Delete all caches + saved model and refit from scratch")
     p.add_argument("--status", action="store_true",
                    help="Show output file status and exit without running anything")
     return p.parse_args()
@@ -112,6 +137,7 @@ def status_check():
     for label, path in [
         ("bertopic_model.pkl",   CONFIG["model_path"]),
         ("embeddings_cache.npy", CONFIG["embedding_cache"]),
+        ("umap_cache.npy",       CONFIG["umap_cache"]),
     ]:
         exists = os.path.isfile(path)
         print(f"\n  {'[OK]     ' if exists else '[MISSING]'} {label}  ({path})")
@@ -130,6 +156,29 @@ def _detect_device():
         return "cuda" if torch.cuda.is_available() else "cpu"
     except ImportError:
         return "cpu"
+
+
+class CachedUMAP:
+    """
+    Drop-in UMAP replacement that returns a pre-computed embedding matrix.
+
+    Used so BERTopic's fit_transform() skips the UMAP fitting step entirely
+    when a cached umap_cache.npy already exists.  After fitting, BERTopic's
+    internal umap_model is replaced with the real fitted UMAP before the model
+    is saved to disk, so future transform() calls work correctly.
+    """
+    def __init__(self, cached):
+        self.cached     = cached
+        self.embedding_ = cached   # attribute BERTopic may inspect
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return self.cached
+
+    def fit_transform(self, X, y=None):
+        return self.cached
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +225,7 @@ def main():
     frames = []
     for f in csv_files:
         try:
-            frames.append(pd.read_csv(f, low_memory=False))
+            frames.append(pd.read_csv(f, low_memory=False, on_bad_lines="skip"))
         except Exception as e:
             print(f"  WARNING: could not read {f}: {e}")
 
@@ -194,7 +243,6 @@ def main():
 
     df["headline"]  = df["headline"].fillna("").astype(str)
     df["body_text"] = df["body_text"].fillna("").astype(str)
-    # Headline repeated 3× gives it higher term weight without any TF-IDF tuning
     df["text"] = (
         df["headline"] + " " +
         df["headline"] + " " +
@@ -212,27 +260,31 @@ def main():
     print(f"  Final usable documents: {total_docs:,}")
 
     # ────────────────────────────────────────────────────────────────────────
-    # STEP 2 — EMBEDDINGS  (cached to .npy so this step runs only once)
+    # STEP 2 — SENTENCE-TRANSFORMER EMBEDDINGS  (cached)
     # ────────────────────────────────────────────────────────────────────────
     embed_cache  = CONFIG["embedding_cache"]
+    umap_cache   = CONFIG["umap_cache"]
     model_path   = CONFIG["model_path"]
-    cache_exists = os.path.isfile(embed_cache)
-    model_exists = os.path.isfile(model_path)
 
+    # Delete all caches if --refit requested
     if args.refit:
-        for path in [embed_cache, model_path]:
+        for path in [embed_cache, umap_cache, model_path]:
             if os.path.isfile(path):
                 os.remove(path)
                 print(f"  Deleted: {path}")
-        cache_exists = model_exists = False
+
+    cache_exists = os.path.isfile(embed_cache)
+    model_exists = os.path.isfile(model_path)
 
     if cache_exists:
         print(f"\n[2/7] Loading cached embeddings from {embed_cache} …")
         embeddings = np.load(embed_cache)
         if len(embeddings) != total_docs:
             print(f"  WARNING: cache has {len(embeddings):,} rows but corpus has "
-                  f"{total_docs:,} — discarding cache and re-encoding.")
-            os.remove(embed_cache)
+                  f"{total_docs:,} — discarding embedding + UMAP caches and re-encoding.")
+            for path in [embed_cache, umap_cache]:
+                if os.path.isfile(path):
+                    os.remove(path)
             cache_exists = False
 
     if not cache_exists:
@@ -243,39 +295,73 @@ def main():
         st_model   = SentenceTransformer(CONFIG["embedding_model"], device=device)
         embeddings = st_model.encode(
             docs,
-            batch_size       = CONFIG["embed_batch_size"],
-            show_progress_bar= True,
-            convert_to_numpy = True,
+            batch_size        = CONFIG["embed_batch_size"],
+            show_progress_bar = True,
+            convert_to_numpy  = True,
         )
         np.save(embed_cache, embeddings)
         print(f"  Embeddings saved to {embed_cache}  (shape: {embeddings.shape})")
 
     # ────────────────────────────────────────────────────────────────────────
+    # STEP 2b — UMAP REDUCTION  (cached separately — takes ~2 hrs on CPU)
+    # ────────────────────────────────────────────────────────────────────────
+    umap_exists = os.path.isfile(umap_cache)
+
+    # Build the real UMAP model (needed whether we fit or just load)
+    umap_model = UMAP(
+        n_neighbors  = CONFIG["umap_n_neighbors"],
+        n_components = CONFIG["umap_n_components"],
+        min_dist     = CONFIG["umap_min_dist"],
+        metric       = CONFIG["umap_metric"],
+        random_state = 42,
+    )
+
+    if umap_exists:
+        print(f"\n[2b/7] Loading cached UMAP embeddings from {umap_cache} …")
+        umap_embeddings = np.load(umap_cache)
+        if len(umap_embeddings) != total_docs:
+            print(f"  WARNING: UMAP cache size mismatch — re-running UMAP.")
+            os.remove(umap_cache)
+            umap_exists = False
+
+    if not umap_exists:
+        print(f"\n[2b/7] Running UMAP on {total_docs:,} documents …")
+        print("  This takes ~2 hrs on CPU for 227K docs. Cached after first run.")
+        umap_embeddings = umap_model.fit_transform(embeddings)
+        np.save(umap_cache, umap_embeddings)
+        print(f"  UMAP embeddings saved to {umap_cache}  (shape: {umap_embeddings.shape})")
+    else:
+        # Fit the real UMAP model on the cached output so it can transform new
+        # points correctly when loaded from the saved pkl.
+        # This is fast — we're fitting on already-reduced 5D data.
+        print("  Re-fitting UMAP model on cached embeddings for transform() …")
+        umap_model.fit(embeddings, y=None)
+
+    # ────────────────────────────────────────────────────────────────────────
     # STEP 3 — FIT / LOAD BERTOPIC MODEL
     # ────────────────────────────────────────────────────────────────────────
+    model_exists = os.path.isfile(model_path)
+
     if model_exists:
         print(f"\n[3/7] Loading saved model from {model_path} …")
         with open(model_path, "rb") as fh:
             topic_model = pickle.load(fh)
-        print("  Transforming corpus through loaded model (using cached embeddings) …")
-        # Pass pre-computed embeddings so BERTopic skips its internal encoder
+        print("  Transforming corpus (using cached UMAP embeddings) …")
+        # Swap in CachedUMAP so transform() skips the slow UMAP step
+        topic_model.umap_model = CachedUMAP(umap_embeddings)
         topics, probs = topic_model.transform(docs, embeddings=embeddings)
+        # Restore the real umap_model in memory (pkl on disk is unchanged)
+        topic_model.umap_model = umap_model
+
     else:
         print("\n[3/7] Fitting BERTopic …")
-
-        umap_model = UMAP(
-            n_neighbors  = CONFIG["umap_n_neighbors"],
-            n_components = CONFIG["umap_n_components"],
-            min_dist     = CONFIG["umap_min_dist"],
-            metric       = CONFIG["umap_metric"],
-            random_state = 42,
-        )
+        print("  UMAP already done — only HDBSCAN + representation remain.")
 
         hdbscan_model = HDBSCAN(
             min_cluster_size         = CONFIG["hdbscan_min_cluster"],
             min_samples              = CONFIG["hdbscan_min_samples"],
             cluster_selection_method = CONFIG["hdbscan_method"],
-            prediction_data          = True,  # required for calculate_probabilities
+            prediction_data          = True,
         )
 
         vectorizer_model = CountVectorizer(
@@ -285,19 +371,24 @@ def main():
         )
 
         topic_model = BERTopic(
-            embedding_model         = CONFIG["embedding_model"],  # kept for metadata only
-            umap_model              = umap_model,
+            embedding_model         = CONFIG["embedding_model"],
+            umap_model              = CachedUMAP(umap_embeddings),  # skips UMAP step
             hdbscan_model           = hdbscan_model,
             vectorizer_model        = vectorizer_model,
             representation_model    = KeyBERTInspired(),
             nr_topics               = CONFIG["nr_topics"],
-            calculate_probabilities = True,
+            calculate_probabilities = False,   # True needs ~7 GB RAM — not feasible
             verbose                 = True,
         )
 
-        # Pass pre-computed embeddings as the second argument — BERTopic skips
-        # its internal encode step entirely, which is where most time is saved.
+        # Pre-computed embeddings passed → BERTopic skips its internal encoder.
+        # CachedUMAP passed as umap_model → BERTopic skips UMAP fitting.
+        # Only HDBSCAN + topic representation run fresh.
         topics, probs = topic_model.fit_transform(docs, embeddings=embeddings)
+
+        # Replace CachedUMAP with the real fitted UMAP before saving so that
+        # future transform() calls on new documents work correctly.
+        topic_model.umap_model = umap_model
 
         print(f"\n  Saving model to {model_path} …")
         with open(model_path, "wb") as fh:
@@ -353,11 +444,11 @@ def main():
     print(f"  Saved → {out(CONFIG['topics_xlsx'])}")
 
     # --- assignments csv -----------------------------------------------------
+    # calculate_probabilities=False → probs is None; column written as blank
     if probs is not None and np.ndim(probs) == 2:
-        # Full probability matrix: pick the probability for the assigned topic
         topic_probs = probs[np.arange(len(topics)), [max(t, 0) for t in topics]]
     elif probs is not None:
-        topic_probs = probs  # 1-D array already
+        topic_probs = probs
     else:
         topic_probs = [None] * len(topics)
 
@@ -381,7 +472,6 @@ def main():
         png_path  = out(base_name + ".png")
         fig.write_html(html_path)
         try:
-            # Do NOT pass engine= ; plotly auto-detects kaleido ≥1.0
             pio.write_image(fig, png_path, width=1400, height=900, scale=2)
         except Exception as e:
             print(f"  WARNING: PNG export failed ({e})")
@@ -421,7 +511,7 @@ def main():
     except Exception as e:
         print(f"  WARNING: {e}")
 
-    # 6e. Document scatter — reuse cached embeddings; only 2D UMAP is needed
+    # 6e. Document scatter — 2D UMAP on the cached high-dim embeddings
     print("  visualize_documents() …")
     try:
         umap_2d = UMAP(
@@ -431,9 +521,7 @@ def main():
             metric       = CONFIG["umap_metric"],
             random_state = 42,
         )
-        # embeddings already in memory from Step 2 — no re-encoding
         reduced_2d = umap_2d.fit_transform(embeddings)
-        # hide_document_hover is the valid kwarg; hide_annotations was removed
         save_fig(
             topic_model.visualize_documents(
                 docs,
@@ -445,7 +533,7 @@ def main():
     except Exception as e:
         print(f"  WARNING: {e}")
 
-    # 6f. Topic probability distribution — printed to terminal for 10 articles
+    # 6f. Per-article topic distribution — terminal preview for 10 articles
     print("\n  Topic probability distribution — sample articles:")
     sample_idx = np.linspace(0, len(docs) - 1, CONFIG["distribution_sample"], dtype=int)
     print("-" * 80)
