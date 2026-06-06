@@ -126,6 +126,10 @@ def parse_args():
     p = argparse.ArgumentParser(description="BERTopic explorer for BR corpus")
     p.add_argument("--refit",  action="store_true",
                    help="Delete all caches + saved model and refit from scratch")
+    p.add_argument("--resume", action="store_true",
+                   help="Load topics from bertopic_assignments.csv and skip encoding/"
+                        "UMAP/transform.  Use to regenerate visualisations after a "
+                        "partial run (e.g. after a Colab crash).")
     p.add_argument("--status", action="store_true",
                    help="Show output file status and exit without running anything")
     return p.parse_args()
@@ -278,6 +282,75 @@ def main():
     print(f"  Final usable documents: {total_docs:,}")
 
     # ────────────────────────────────────────────────────────────────────────
+    # --resume  — load everything from disk, skip encoding / UMAP / transform
+    # Use after a crash when you have:
+    #   embeddings_cache.npy  +  bertopic_model.pkl  +  bertopic_assignments.csv
+    # ────────────────────────────────────────────────────────────────────────
+    if args.resume:
+        import pickle as _rpkl
+        _assign_path = os.path.join(CONFIG["out_dir"], CONFIG["assignments_csv"])
+        _model_path  = CONFIG["model_path"]
+        _embed_cache = CONFIG["embedding_cache"]
+        _missing = [(l, p) for l, p in [
+            ("bertopic_assignments.csv", _assign_path),
+            ("bertopic_model.pkl",       _model_path),
+            ("embeddings_cache.npy",     _embed_cache),
+        ] if not os.path.isfile(p)]
+        if _missing:
+            for _l, _p in _missing:
+                print(f"  MISSING: {_l}")
+                print(f"           {_p}")
+            sys.exit("\nERROR (--resume): copy missing files from G: drive, then retry.")
+
+        print(f"\n[--resume] Loading assignments …")
+        _asgn = pd.read_csv(_assign_path, on_bad_lines="skip")
+        _order    = _asgn["article_id"].astype(str).tolist()
+        _id_set   = set(_order)
+        df["_s"]  = df["article_id"].astype(str)
+        _df2      = df[df["_s"].isin(_id_set)].copy()
+        _rank     = {aid: i for i, aid in enumerate(_order)}
+        _df2["_r"] = _df2["_s"].map(_rank)
+        _df2 = (_df2.sort_values("_r")
+                    .drop(columns=["_s", "_r"])
+                    .reset_index(drop=True))
+        n_dropped  = total_docs - len(_df2)
+        df         = _df2
+        docs       = df["text"].tolist()
+        timestamps = df["date"].tolist() if "date" in df.columns else None
+        total_docs = len(docs)
+        print(f"  Corpus aligned: {total_docs:,} articles ({n_dropped:,} newer set aside).")
+
+        embeddings = np.load(_embed_cache)
+        if len(embeddings) != total_docs:
+            sys.exit(
+                f"\nERROR (--resume): embeddings_cache.npy has {len(embeddings):,} rows "
+                f"but aligned corpus has {total_docs:,}.\n"
+                "Copy the correct embeddings_cache.npy from G: drive."
+            )
+        print(f"  Embeddings loaded ({len(embeddings):,} rows).")
+
+        topics = _asgn["topic_id"].iloc[:total_docs].tolist()
+        probs  = None
+        print(f"  Loading model …")
+        with open(_model_path, "rb") as _fh:
+            topic_model = _rpkl.load(_fh)
+
+        umap_model = UMAP(
+            n_neighbors  = CONFIG["umap_n_neighbors"],
+            n_components = CONFIG["umap_n_components"],
+            min_dist     = CONFIG["umap_min_dist"],
+            metric       = CONFIG["umap_metric"],
+            random_state = 42,
+        )
+        embed_cache   = _embed_cache
+        umap_cache    = CONFIG["umap_cache"]
+        umap_2d_cache = CONFIG["umap_2d_cache"]
+        model_path    = _model_path
+        _n_t = len(set(t for t in topics if t != -1))
+        _n_o = sum(1 for t in topics if t == -1)
+        print(f"  Ready: {_n_t} topics, {_n_o:,} outliers. Jumping to step 4.")
+
+    # ────────────────────────────────────────────────────────────────────────
     # STEP 2 — SENTENCE-TRANSFORMER EMBEDDINGS  (cached; aligns to cache on
     #           corpus growth so only new articles need encoding next time)
     # ────────────────────────────────────────────────────────────────────────
@@ -343,20 +416,20 @@ def main():
                     else:
                         print(f"  WARNING: only {len(df_trim):,} of {len(cached_emb):,} "
                               f"cached articles found in current corpus — re-encoding all.")
-                        os.remove(embed_cache)
+                        # Do NOT delete cache — leave it for --resume
                 except Exception as e:
                     print(f"  WARNING: alignment failed ({e}) — re-encoding all.")
-                    os.remove(embed_cache)
+                    # Do NOT delete cache — leave it for --resume
             else:
                 print(f"  Cache has {len(cached_emb):,} rows; corpus has {total_docs:,}.")
-                print(f"  No assignments CSV for alignment — discarding cache and re-encoding.")
-                os.remove(embed_cache)
+                print(f"  TIP: copy bertopic_assignments.csv to BERTopic Outputs to enable")
+                print(f"       fast alignment, or use --resume to skip encoding entirely.")
+                # Do NOT delete cache
 
         else:
             # Cache has MORE rows than corpus (shouldn't normally happen)
             print(f"  WARNING: cache has {len(cached_emb):,} rows but corpus has only "
-                  f"{total_docs:,} — discarding cache and re-encoding.")
-            os.remove(embed_cache)
+                  f"{total_docs:,} — re-encoding.")
 
     if embeddings is None:
         device = CONFIG.get("embed_device") or _detect_device()
@@ -413,7 +486,9 @@ def main():
     # ────────────────────────────────────────────────────────────────────────
     model_exists = os.path.isfile(model_path)
 
-    if model_exists:
+    if args.resume:
+        pass  # model, topics, embeddings already loaded above — skip transform
+    elif model_exists:
         print(f"\n[3/7] Loading saved model from {model_path} …")
         with open(model_path, "rb") as fh:
             topic_model = pickle.load(fh)
@@ -424,7 +499,7 @@ def main():
         # Restore the real umap_model in memory (pkl on disk is unchanged)
         topic_model.umap_model = umap_model
 
-    else:
+    elif not model_exists:
         print("\n[3/7] Fitting BERTopic …")
 
         # ── Sample for fitting ───────────────────────────────────────────────
