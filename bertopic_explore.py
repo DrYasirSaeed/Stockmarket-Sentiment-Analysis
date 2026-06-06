@@ -340,12 +340,9 @@ def main():
         umap_embeddings = umap_model.fit_transform(embeddings)
         np.save(umap_cache, umap_embeddings)
         print(f"  UMAP embeddings saved to {umap_cache}  (shape: {umap_embeddings.shape})")
-    else:
-        # Fit the real UMAP model on the cached output so it can transform new
-        # points correctly when loaded from the saved pkl.
-        # This is fast — we're fitting on already-reduced 5D data.
-        print("  Re-fitting UMAP model on cached embeddings for transform() …")
-        umap_model.fit(embeddings, y=None)
+    # When cache exists: umap_embeddings already loaded above.
+    # No re-fitting needed — CachedUMAP is used throughout so the real
+    # umap_model object is never called for fit or transform.
 
     # ────────────────────────────────────────────────────────────────────────
     # STEP 3 — FIT / LOAD BERTOPIC MODEL
