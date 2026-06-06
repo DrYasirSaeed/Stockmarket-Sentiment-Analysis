@@ -278,9 +278,10 @@ def main():
     print(f"  Final usable documents: {total_docs:,}")
 
     # ────────────────────────────────────────────────────────────────────────
-    # STEP 2 — SENTENCE-TRANSFORMER EMBEDDINGS  (cached)
+    # STEP 2 — SENTENCE-TRANSFORMER EMBEDDINGS  (cached; aligns to cache on
+    #           corpus growth so only new articles need encoding next time)
     # ────────────────────────────────────────────────────────────────────────
-    embed_cache  = CONFIG["embedding_cache"]
+    embed_cache   = CONFIG["embedding_cache"]
     umap_cache    = CONFIG["umap_cache"]
     umap_2d_cache = CONFIG["umap_2d_cache"]
     model_path    = CONFIG["model_path"]
@@ -292,21 +293,72 @@ def main():
                 os.remove(path)
                 print(f"  Deleted: {path}")
 
-    cache_exists = os.path.isfile(embed_cache)
-    model_exists = os.path.isfile(model_path)
+    embeddings = None
 
-    if cache_exists:
+    if os.path.isfile(embed_cache):
         print(f"\n[2/7] Loading cached embeddings from {embed_cache} …")
-        embeddings = np.load(embed_cache)
-        if len(embeddings) != total_docs:
-            print(f"  WARNING: cache has {len(embeddings):,} rows but corpus has "
-                  f"{total_docs:,} — discarding embedding + UMAP caches and re-encoding.")
-            for path in [embed_cache, umap_cache]:
-                if os.path.isfile(path):
-                    os.remove(path)
-            cache_exists = False
+        cached_emb = np.load(embed_cache)
 
-    if not cache_exists:
+        if len(cached_emb) == total_docs:
+            # Perfect match — load and continue
+            embeddings = cached_emb
+            print(f"  Loaded ({total_docs:,} rows).")
+
+        elif len(cached_emb) < total_docs:
+            # Corpus has grown since the cache was built.
+            # Strategy: align the current corpus to the cached article order
+            # using the existing assignments CSV, then trim the new articles.
+            # This avoids a full re-encode.  Use --refit to include new articles.
+            assign_path = out(CONFIG["assignments_csv"])
+            if os.path.isfile(assign_path):
+                n_new = total_docs - len(cached_emb)
+                print(f"  Cache has {len(cached_emb):,} rows; corpus has {total_docs:,} "
+                      f"({n_new:,} new articles).")
+                print(f"  Aligning corpus to cache order via {assign_path} …")
+                try:
+                    asgn = pd.read_csv(assign_path, usecols=["article_id"],
+                                       on_bad_lines="skip")
+                    cached_order  = asgn["article_id"].astype(str).tolist()
+                    cached_id_set = set(cached_order)
+
+                    df["_aid_str"] = df["article_id"].astype(str)
+                    df_trim = df[df["_aid_str"].isin(cached_id_set)].copy()
+                    aid_rank = {aid: i for i, aid in enumerate(cached_order)}
+                    df_trim["_rank"] = df_trim["_aid_str"].map(aid_rank)
+                    df_trim = (df_trim
+                               .sort_values("_rank")
+                               .drop(columns=["_aid_str", "_rank"])
+                               .reset_index(drop=True))
+
+                    if len(df_trim) == len(cached_emb):
+                        df         = df_trim
+                        docs       = df["text"].tolist()
+                        timestamps = (df["date"].tolist()
+                                      if "date" in df.columns else None)
+                        total_docs = len(docs)
+                        embeddings = cached_emb
+                        print(f"  Corpus trimmed to {total_docs:,} articles "
+                              f"(set aside {n_new:,} new articles; "
+                              f"use --refit to re-encode and include them).")
+                    else:
+                        print(f"  WARNING: only {len(df_trim):,} of {len(cached_emb):,} "
+                              f"cached articles found in current corpus — re-encoding all.")
+                        os.remove(embed_cache)
+                except Exception as e:
+                    print(f"  WARNING: alignment failed ({e}) — re-encoding all.")
+                    os.remove(embed_cache)
+            else:
+                print(f"  Cache has {len(cached_emb):,} rows; corpus has {total_docs:,}.")
+                print(f"  No assignments CSV for alignment — discarding cache and re-encoding.")
+                os.remove(embed_cache)
+
+        else:
+            # Cache has MORE rows than corpus (shouldn't normally happen)
+            print(f"  WARNING: cache has {len(cached_emb):,} rows but corpus has only "
+                  f"{total_docs:,} — discarding cache and re-encoding.")
+            os.remove(embed_cache)
+
+    if embeddings is None:
         device = CONFIG.get("embed_device") or _detect_device()
         print(f"\n[2/7] Encoding {total_docs:,} documents "
               f"(model={CONFIG['embedding_model']}, device={device}) …")
@@ -319,7 +371,7 @@ def main():
             convert_to_numpy  = True,
         )
         np.save(embed_cache, embeddings)
-        print(f"  Embeddings saved to {embed_cache}  (shape: {embeddings.shape})")
+        print(f"  Embeddings saved → {embed_cache}  (shape: {embeddings.shape})")
 
     # ────────────────────────────────────────────────────────────────────────
     # STEP 2b — UMAP REDUCTION  (cached separately — takes ~2 hrs on CPU)
@@ -339,16 +391,19 @@ def main():
         print(f"\n[2b/7] Loading cached UMAP embeddings from {umap_cache} …")
         umap_embeddings = np.load(umap_cache)
         if len(umap_embeddings) != total_docs:
-            print(f"  WARNING: UMAP cache size mismatch — re-running UMAP.")
+            print(f"  WARNING: UMAP cache size mismatch ({len(umap_embeddings):,} vs "
+                  f"{total_docs:,}) — re-running UMAP.")
             os.remove(umap_cache)
             umap_exists = False
+        else:
+            print(f"  Loaded ({total_docs:,} rows).")
 
     if not umap_exists:
         print(f"\n[2b/7] Running UMAP on {total_docs:,} documents …")
-        print("  This takes ~2 hrs on CPU for 227K docs. Cached after first run.")
+        print("  This takes ~2 hrs on CPU for 414K docs. Cached after first run.")
         umap_embeddings = umap_model.fit_transform(embeddings)
         np.save(umap_cache, umap_embeddings)
-        print(f"  UMAP embeddings saved to {umap_cache}  (shape: {umap_embeddings.shape})")
+        print(f"  UMAP embeddings saved → {umap_cache}  (shape: {umap_embeddings.shape})")
     # When cache exists: umap_embeddings already loaded above.
     # No re-fitting needed — CachedUMAP is used throughout so the real
     # umap_model object is never called for fit or transform.
