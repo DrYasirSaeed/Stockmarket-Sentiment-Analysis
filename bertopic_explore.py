@@ -92,6 +92,12 @@ CONFIG = {
     # ── Misc ─────────────────────────────────────────────────────────────────
     "sanity_keywords":      ["sbp", "imf", "fbr", "nepra"],
     "distribution_sample":  10,    # articles printed for distribution preview
+
+    # ── Fit sample ───────────────────────────────────────────────────────────
+    # BERTopic is FITTED on this many randomly sampled docs to keep HDBSCAN
+    # and c-TF-IDF within memory limits. After fitting, ALL docs are assigned
+    # topics via transform(). Set to None to fit on the full corpus.
+    "fit_sample_size":      100_000,
 }
 
 OUTPUT_FILES = [
@@ -362,6 +368,22 @@ def main():
 
     else:
         print("\n[3/7] Fitting BERTopic …")
+
+        # ── Sample for fitting ───────────────────────────────────────────────
+        fit_n = CONFIG.get("fit_sample_size")
+        if fit_n and fit_n < total_docs:
+            np.random.seed(42)
+            sample_idx      = np.sort(np.random.choice(total_docs, fit_n, replace=False))
+            fit_docs        = [docs[i] for i in sample_idx]
+            fit_embeddings  = embeddings[sample_idx]
+            fit_umap        = umap_embeddings[sample_idx]
+            print(f"  Fitting on {fit_n:,} sampled docs (all {total_docs:,} assigned after).")
+        else:
+            fit_docs       = docs
+            fit_embeddings = embeddings
+            fit_umap       = umap_embeddings
+            print("  Fitting on full corpus.")
+
         print("  UMAP already done — only HDBSCAN + representation remain.")
 
         hdbscan_model = HDBSCAN(
@@ -374,7 +396,7 @@ def main():
         vectorizer_model = CountVectorizer(
             ngram_range  = CONFIG["ngram_range"],
             min_df       = CONFIG["min_df"],
-            max_features = CONFIG.get("max_features"),   # None = no cap (safe default)
+            max_features = CONFIG.get("max_features"),
             stop_words   = "english",
         )
 
@@ -383,27 +405,30 @@ def main():
         try:
             representation_model = KeyBERTInspired(top_n_words=10)
         except Exception as e:
-            print(f"  WARNING: KeyBERTInspired failed ({e}) — using default c-TF-IDF representation.")
+            print(f"  WARNING: KeyBERTInspired failed ({e}) — using default c-TF-IDF.")
             representation_model = None
 
         topic_model = BERTopic(
             embedding_model         = CONFIG["embedding_model"],
-            umap_model              = CachedUMAP(umap_embeddings),  # skips UMAP step
+            umap_model              = CachedUMAP(fit_umap),   # skips UMAP on sample
             hdbscan_model           = hdbscan_model,
             vectorizer_model        = vectorizer_model,
             representation_model    = representation_model,
             nr_topics               = CONFIG["nr_topics"],
-            calculate_probabilities = False,   # True needs ~7 GB RAM — not feasible
+            calculate_probabilities = False,
             verbose                 = True,
         )
 
-        # Pre-computed embeddings passed → BERTopic skips its internal encoder.
-        # CachedUMAP passed as umap_model → BERTopic skips UMAP fitting.
-        # Only HDBSCAN + topic representation run fresh.
-        topics, probs = topic_model.fit_transform(docs, embeddings=embeddings)
+        # Fit on sample
+        topic_model.fit_transform(fit_docs, embeddings=fit_embeddings)
 
-        # Replace CachedUMAP with the real fitted UMAP before saving so that
-        # future transform() calls on new documents work correctly.
+        # ── Assign ALL docs via transform ────────────────────────────────────
+        if fit_n and fit_n < total_docs:
+            print(f"  Assigning all {total_docs:,} documents via transform() …")
+        topic_model.umap_model = CachedUMAP(umap_embeddings)  # full corpus UMAP
+        topics, probs = topic_model.transform(docs, embeddings=embeddings)
+
+        # Save with real umap_model so future transform() on new docs works
         topic_model.umap_model = umap_model
 
         print(f"\n  Saving model to {model_path} …")
