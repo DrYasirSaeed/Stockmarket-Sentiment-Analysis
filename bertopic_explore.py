@@ -49,8 +49,10 @@ CONFIG = {
     "model_path":       _BASE + ("/bertopic_model.pkl" if _ON_COLAB else r"\bertopic_model.pkl"),
     # Sentence-transformer output — recomputed only on --refit or corpus change
     "embedding_cache":  _BASE + ("/embeddings_cache.npy" if _ON_COLAB else r"\embeddings_cache.npy"),
-    # UMAP-reduced embeddings — recomputed only on --refit or corpus change
+    # UMAP 5D — recomputed only on --refit or corpus change
     "umap_cache":       _BASE + ("/umap_cache.npy" if _ON_COLAB else r"\umap_cache.npy"),
+    # UMAP 2D — used only for visualize_documents(); cached to avoid 1-2 hr recompute
+    "umap_2d_cache":    _BASE + ("/umap_2d_cache.npy" if _ON_COLAB else r"\umap_2d_cache.npy"),
 
     # ── Output directory ─────────────────────────────────────────────────────
     "out_dir":          _BASE + ("/BERTopic Outputs" if _ON_COLAB else r"\BERTopic Outputs"),
@@ -279,12 +281,13 @@ def main():
     # STEP 2 — SENTENCE-TRANSFORMER EMBEDDINGS  (cached)
     # ────────────────────────────────────────────────────────────────────────
     embed_cache  = CONFIG["embedding_cache"]
-    umap_cache   = CONFIG["umap_cache"]
-    model_path   = CONFIG["model_path"]
+    umap_cache    = CONFIG["umap_cache"]
+    umap_2d_cache = CONFIG["umap_2d_cache"]
+    model_path    = CONFIG["model_path"]
 
     # Delete all caches if --refit requested
     if args.refit:
-        for path in [embed_cache, umap_cache, model_path]:
+        for path in [embed_cache, umap_cache, umap_2d_cache, model_path]:
             if os.path.isfile(path):
                 os.remove(path)
                 print(f"  Deleted: {path}")
@@ -552,17 +555,32 @@ def main():
     except Exception as e:
         print(f"  WARNING: {e}")
 
-    # 6e. Document scatter — 2D UMAP on the cached high-dim embeddings
+    # 6e. Document scatter — 2D UMAP cached separately (1-2 hrs to compute)
     print("  visualize_documents() …")
     try:
-        umap_2d = UMAP(
-            n_neighbors  = CONFIG["umap_n_neighbors"],
-            n_components = 2,
-            min_dist     = CONFIG["umap_min_dist"],
-            metric       = CONFIG["umap_metric"],
-            random_state = 42,
-        )
-        reduced_2d = umap_2d.fit_transform(embeddings)
+        _2d_path = umap_2d_cache
+        if os.path.isfile(_2d_path):
+            print("    Loading cached 2D UMAP …")
+            reduced_2d = np.load(_2d_path)
+            if len(reduced_2d) != total_docs:
+                print("    Cache size mismatch — recomputing 2D UMAP …")
+                reduced_2d = None
+        else:
+            reduced_2d = None
+
+        if reduced_2d is None:
+            print("    Computing 2D UMAP (takes ~1-2 hrs on CPU, cached after) …")
+            umap_2d = UMAP(
+                n_neighbors  = CONFIG["umap_n_neighbors"],
+                n_components = 2,
+                min_dist     = CONFIG["umap_min_dist"],
+                metric       = CONFIG["umap_metric"],
+                random_state = 42,
+            )
+            reduced_2d = umap_2d.fit_transform(embeddings)
+            np.save(_2d_path, reduced_2d)
+            print(f"    2D UMAP saved to {_2d_path}")
+
         save_fig(
             topic_model.visualize_documents(
                 docs,
