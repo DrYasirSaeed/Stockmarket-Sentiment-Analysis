@@ -209,3 +209,14 @@ __marimo__/
 # BERTopic artefacts
 bertopic_model.pkl
 embeddings_cache.npy
+
+# Data and regenerable pipeline artefacts (large — not tracked)
+Extracted Data/
+BERTopic Outputs/
+Phase 1 Outputs/
+Phase 2 Outputs/
+umap_cache.npy
+umap_2d_cache.npy
+
+# Office lock files
+~$*
