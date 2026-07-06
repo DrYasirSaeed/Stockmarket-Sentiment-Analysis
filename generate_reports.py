@@ -296,40 +296,66 @@ def r06():
 # =============================================================== report 07 ----
 def r07():
     rep = Report(7, "Unit Root Tests")
-    rep.p("Stationarity is a precondition for VAR-in-levels and Granger testing. ADF "
-          "(H0: unit root) and KPSS (H0: stationarity) per series, plus the Maddala-Wu "
-          "(1999) Fisher-type panel test combining individual ADF p-values, "
-          "-2 SUM ln(p_i) ~ chi2(2N).")
-    rep.h1("1. Panel tests")
-    rep.table(xl(TAB / "07_unit_root_tests.xlsx", "MaddalaWu_panel"))
-    rep.h1("2. Series-by-series")
+    rep.p("ADF (H0: unit root) and KPSS (H0: stationarity) are applied to every series "
+          "in LEVELS and in FIRST DIFFERENCES, yielding an integration order per "
+          "series: I(0) if the levels ADF rejects at 5%; I(1) if only the "
+          "first-difference ADF rejects.")
+    rep.h1("1. Findings and consequences for estimation")
+    rep.p("All 26 return series are I(0) (returns are first differences of log prices "
+          "by construction). Among the sentiment series, S_Fiscal and S_Energy are "
+          "I(0), while S_All, S_Monetary and S_External are I(1) in levels and "
+          "stationary in first differences. Two corrections follow (implemented in "
+          "Reports 09-11):")
+    rep.bullet("Causality is tested with Toda-Yamamoto (1995) lag-augmented Wald tests "
+               "on levels — valid regardless of integration or cointegration.")
+    rep.bullet("VAR/IRF/FEVD and lead-lag systems use first differences of the I(1) "
+               "sentiment series (dS_* = daily sentiment change, the 'sentiment news' "
+               "innovation); I(0) series enter in levels.")
+    rep.h1("2. Series-by-series tests (levels and first differences)")
     rep.table(xl(TAB / "07_unit_root_tests.xlsx", "ADF_KPSS_by_series"), fontsize=7.5)
-    rep.note("KPSS p-values are interpolation-bounded by statsmodels at [0.01, 0.10].")
+    rep.h1("3. Maddala-Wu Fisher combination")
+    rep.p("H0: ALL series in the group contain a unit root. Rejection establishes only "
+          "that at least one series is stationary — the per-series integration orders "
+          "above are the operative evidence for model specification.")
+    rep.table(xl(TAB / "07_unit_root_tests.xlsx", "MaddalaWu_panel"))
+    rep.note("KPSS p-values are interpolation-bounded by statsmodels at [0.01, 0.10]. "
+             "The bounded [-1,1] sentiment indices cannot literally contain a unit "
+             "root; the I(1) finding reflects near-integrated persistence over the "
+             "six-year window, which has the same consequences for test validity.")
     rep.save()
 
 
 # =============================================================== report 08 ----
 def r08():
     rep = Report(8, "VAR Lag Selection")
-    rep.p("Lag order for the market systems selected over 1–10 lags. The estimation "
-          "suite uses the AIC-selected order per system (sectoral VARs select their own "
-          "AIC order).")
+    rep.p("Lag order for the market systems selected over 1–10 lags, on the stationary "
+          "transforms (I(1) sentiment series enter as first differences, dS_*; see "
+          "Report 07). The estimation suite uses the AIC-selected order per system "
+          "(sectoral VARs select their own AIC order).")
     rep.table(xl(TAB / "08_lag_selection.xlsx"))
     rep.save()
 
 
 # =============================================================== report 09 ----
 def r09():
-    rep = Report(9, "Granger Causality")
-    rep.p("Bivariate Granger tests (SSR F-test) at lags 1–5, in BOTH directions: "
-          "sentiment -> return (transmission) and return -> sentiment (reverse "
-          "causality: markets moving before the press writes, or coverage following "
-          "price action). min_p is the smallest p-value across the five lags; sig_lags "
-          "lists lags significant at 5%.")
-    rep.h1("1. Market level (combined index)")
-    rep.table(xl(TAB / "09_granger_causality.xlsx", "market"), fontsize=8)
-    rep.h1("2. All sectors x channels (bidirectional)")
-    rep.table(xl(TAB / "09_granger_causality.xlsx", "sectors_bidirectional"),
+    rep = Report(9, "Granger Causality (Toda-Yamamoto)")
+    rep.p("Because three sentiment series are I(1) in levels (Report 07), standard "
+          "Granger F-tests in levels are invalid for them. Causality is therefore "
+          "tested with the Toda-Yamamoto (1995) lag-augmented procedure: a bivariate "
+          "system with p + dmax lags is estimated in LEVELS (dmax = highest "
+          "integration order in the pair, here 0 or 1), and a Wald chi2 test is "
+          "applied to the first p lags of the cause variable only. The augmentation "
+          "lag absorbs the unit root, making the test valid regardless of integration "
+          "or cointegration. Reported for p = 1..5 in BOTH directions: sentiment -> "
+          "return (transmission) and return -> sentiment (reverse causality / "
+          "anticipation).")
+    rep.h1("1. Integration orders and VAR treatment")
+    rep.table(xl(TAB / "09_granger_causality.xlsx", "integration_orders"), fontsize=8)
+    rep.table(xl(TAB / "09_granger_causality.xlsx", "var_treatment"), fontsize=8)
+    rep.h1("2. Market level (combined index)")
+    rep.table(xl(TAB / "09_granger_causality.xlsx", "market_TY"), fontsize=8)
+    rep.h1("3. All sectors x channels (bidirectional)")
+    rep.table(xl(TAB / "09_granger_causality.xlsx", "sectors_TY_bidirectional"),
               fontsize=7, max_rows=110)
     rep.save()
 
@@ -337,10 +363,16 @@ def r09():
 # =============================================================== report 10 ----
 def r10():
     rep = Report(10, "VAR IRF and FEVD")
+    rep.p("VAR systems are estimated on stationary transforms: I(1) sentiment series "
+          "enter as first differences (dS_* = daily sentiment change), so an "
+          "'innovation' is a burst of sentiment NEWS; I(0) series and returns enter "
+          "in levels. Treatment per variable:")
+    rep.table(xl(TAB / "10_var_irf_fevd.xlsx", "var_treatment"), fontsize=8)
     rep.h1("1. Market systems")
     rep.table(xl(TAB / "10_var_irf_fevd.xlsx", "var_specs"))
     rep.figure(FIG / "08_irf_market_SAll.png", width=4.2,
-               caption="r_Market response to a unit S_All innovation (95% MC bands, 500 reps)")
+               caption="r_Market response to a unit sentiment-news innovation "
+                       "(95% MC bands, 500 reps)")
     rep.figure(FIG / "09_irf_market_channels.png",
                caption="r_Market response to channel sentiment innovations")
     rep.h2("FEVD — market")
@@ -366,7 +398,9 @@ def r11():
           "helps explain today's return. For every return series and sentiment series: "
           "OLS of r_t on five LAGS and five LEADS of sentiment, Newey-West HAC "
           "standard errors (5 lags). Joint F-test on the lags = delayed transmission; "
-          "joint F-test on the leads = anticipation / pre-publication adjustment.")
+          "joint F-test on the leads = anticipation / pre-publication adjustment. "
+          "Sentiment enters via its stationary transform (dS_* for I(1) series — "
+          "Report 07), so coefficients read as responses to sentiment CHANGES (news).")
     ll = xl(TAB / "11_lead_lag_anticipation.xlsx")
     rep.h1("1. Market level")
     rep.table(ll[ll["return"] == "r_Market"], fontsize=8)
@@ -388,8 +422,10 @@ def r12():
     rep = Report(12, "Robustness")
     rep.h1("1. Directional correction vs raw FinBERT")
     rep.p("Every headline test re-estimated on sentiment series built from raw FinBERT "
-          "tone (no sign rules). If the directional layer adds information, "
-          "transmission evidence should weaken under raw tone.")
+          "tone (no sign rules), under the same v2.1 econometrics (Toda-Yamamoto "
+          "causality; I(1) series differenced — integration orders re-detected for "
+          "the raw series). If the directional layer adds information, transmission "
+          "evidence should weaken under raw tone.")
     rep.table(xl(TAB / "12_robustness.xlsx", "directional_vs_raw"))
     rep.h1("2. Original five-sector subset")
     rep.p("The study's original five focus sectors, extracted from the all-sector "

@@ -130,45 +130,48 @@ heatmap(corr_ss, "Sentiment series correlations", FIG / "07_corr_sentiment.png",
 print("correlations saved")
 
 # ===================================================================
-# 4. Unit root tests
+# 4. Unit root tests (levels AND first differences, integration order)
 # ===================================================================
-rows = []
-for c in r_cols + s_cols:
-    x = panel[c].dropna()
-    adf_stat, adf_p, _, _, _, _ = adfuller(x, autolag="AIC")
-    try:
-        kp_stat, kp_p, _, _ = kpss(x, regression="c", nlags="auto")
-    except Exception:
-        kp_stat, kp_p = np.nan, np.nan
-    rows.append({"series": c, "ADF_stat": round(adf_stat, 3), "ADF_p": round(adf_p, 4),
-                 "KPSS_stat": round(kp_stat, 3), "KPSS_p": round(kp_p, 3),
-                 "conclusion": "stationary" if (adf_p < 0.05 and (np.isnan(kp_p) or kp_p > 0.05))
-                               else ("stationary (ADF)" if adf_p < 0.05 else "non-stationary?")})
-ur = pd.DataFrame(rows)
+import sys as _sys
+_sys.path.insert(0, str(PROJECT_DIR))
+from stationarity import integration_table, transform_for_var  # noqa: E402
 
-# Maddala-Wu (1999) Fisher panel unit root: -2 sum(ln p_i) ~ chi2(2N)
-def maddala_wu(cols, label):
-    ps = ur[ur["series"].isin(cols)]["ADF_p"].clip(lower=1e-10)
+ur = integration_table(panel, r_cols + s_cols)
+
+# Maddala-Wu (1999) Fisher combination: -2 sum(ln p_i) ~ chi2(2N).
+# H0: ALL series in the group contain a unit root; rejection means AT LEAST
+# ONE series is stationary — it does NOT establish joint stationarity.
+# Per-series orders in the ADF_KPSS table are the operative evidence.
+def maddala_wu(cols, label, pcol):
+    ps = ur[ur["series"].isin(cols)][pcol].clip(lower=1e-10)
     stat = float(-2 * np.log(ps).sum())
     dof = 2 * len(ps)
-    return {"panel": label, "N_series": len(ps), "MW_chi2": round(stat, 1),
-            "dof": dof, "p_value": round(1 - sps.chi2.cdf(stat, dof), 6)}
+    return {"panel": label, "N_series": len(ps), "ADF_p_used": pcol,
+            "MW_chi2": round(stat, 1), "dof": dof,
+            "p_value": round(1 - sps.chi2.cdf(stat, dof), 6)}
 
-mw = pd.DataFrame([maddala_wu(r_cols, "sector returns"),
-                   maddala_wu(s_cols, "sentiment series")])
+mw = pd.DataFrame([maddala_wu(r_cols, "sector returns (levels)", "ADF_p_level"),
+                   maddala_wu(s_cols, "sentiment (levels)", "ADF_p_level"),
+                   maddala_wu(s_cols, "sentiment (first differences)", "ADF_p_diff")])
 with pd.ExcelWriter(TAB / "07_unit_root_tests.xlsx") as xw:
     ur.to_excel(xw, sheet_name="ADF_KPSS_by_series", index=False)
     mw.to_excel(xw, sheet_name="MaddalaWu_panel", index=False)
-print("unit roots saved"); print(mw.to_string(index=False))
+print("unit roots saved")
+print(ur[ur["series"].isin(s_cols)].to_string(index=False))
 
 # ===================================================================
-# 5. VAR lag selection (market system)
+# 5. VAR lag selection (market system, stationary transforms)
 # ===================================================================
-mkt_sys = panel[["r_Market", "S_All"]].dropna()
-chan_sys = panel[["r_Market", "S_Monetary", "S_Fiscal", "S_External", "S_Energy"]].dropna()
+# I(1) sentiment series enter in first differences (dS_*), matching the
+# estimation suite; returns are I(0) and enter in levels.
+tpanel, nmap, _orders = transform_for_var(panel, s_cols, ur)
+u_all = nmap["S_All"]
+u_chans = [nmap[c] for c in ["S_Monetary", "S_Fiscal", "S_External", "S_Energy"]]
+mkt_sys = tpanel[["r_Market", u_all]].dropna()
+chan_sys = tpanel[["r_Market"] + u_chans].dropna()
 rows = []
-for name, data in [("r_Market + S_All", mkt_sys),
-                   ("r_Market + 4 channel series", chan_sys)]:
+for name, data in [(f"r_Market + {u_all}", mkt_sys),
+                   (f"r_Market + {', '.join(u_chans)}", chan_sys)]:
     sel = VAR(data).select_order(10)
     for crit in ["aic", "bic", "fpe", "hqic"]:
         rows.append({"system": name, "criterion": crit.upper(),
